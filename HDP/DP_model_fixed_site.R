@@ -45,8 +45,8 @@ data_extract <- function(){
   #observations and the random initial assignments
   init_table<-table(unlist(lapply(data_labels,function(x) lapply(x,paste,collapse=","))));
   init_labels<-lapply(names(init_table),FUN=(function(x) as.integer(unlist(strsplit(x,split=",")))))
-  names(init_labels)<-names(init_table); #include the *strings* to make later searching easier
-  haplo_clusters=list(word=init_labels,count_table=init_table)
+  init_names<-names(init_table); #include the *strings* to make later searching easier
+  haplo_clusters=list(word=init_labels,count_table=as.integer(init_table),hap_names=init_names)
   
   #data with no mixed components can be treated deterministically, so we filter
   #this out now
@@ -115,7 +115,7 @@ llhd <- function(observation,haplo_clusters){
     mother<-father; mother[!deterministic_indices]<-!father[!deterministic_indices]
     
     #now we need some logic depending if the mother haplotype is an already instantiated cluster
-    mother_index <- match(paste(mother,collapse=","),names(haplo_clusters$word[compat_indices]),nomatch=0)
+    mother_index <- match(paste(mother,collapse=","),haplo_clusters$hap_names[compat_indices],nomatch=0)
     
     if (mother_index==0){
       #append is very slow, but the lists I'm dealing with should generally be
@@ -167,25 +167,27 @@ dp_prior<-function(cluster_counts,alpha){
 #I'm setting this in a pretty cheaty way for testing, using that the number of
 #clusters is asymptotically alpha*log(n) and the true value is 44
 kAlpha=17; 
-kNumIter=500; #way too low, just for simple testing
+kNumIter=10; #way too low, just for simple testing
 
 for (i in 1:kNumIter){
   #randomly permute the data at each step
   for (j in sample(1:kNumObs,size=kNumObs,replace=F)){
-    #remove the labels of the jth data point from the counts
-    father_index <- match(paste(obs$lbls[[j]]$father,collapse=","),names(haplo_clusters$count_table),nomatch=0)
+    ##remove the labels of the jth data point from the counts
+    father_index <- match(paste(obs$lbls[[j]]$father,collapse=","),haplo_clusters$hap_names,nomatch=0)
     if (haplo_clusters$count_table[father_index]==1) {
+      #nothing left in a cluster then we delete the cluster
       haplo_clusters$count_table<-haplo_clusters$count_table[-(father_index)]
       haplo_clusters$word<-haplo_clusters$word[-(father_index)]
+      haplo_clusters$hap_names <- haplo_clusters$hap_names[-(father_index)]
     } else {
       haplo_clusters$count_table[father_index]<- haplo_clusters$count_table[father_index]-1
     }
     
-    
-    mother_index <- match(paste(obs$lbls[[j]]$mother,collapse=","),names(haplo_clusters$count_table),nomatch=0)
-    if (haplo_clusters$count_table[father_index]==1) {
+    mother_index <- match(paste(obs$lbls[[j]]$mother,collapse=","),haplo_clusters$hap_names,nomatch=0)
+    if (haplo_clusters$count_table[mother_index]==1) {
       haplo_clusters$count_table<-haplo_clusters$count_table[-(mother_index)]
       haplo_clusters$word<-haplo_clusters$word[-(mother_index)]
+      haplo_clusters$hap_names <- haplo_clusters$hap_names[-(mother_index)]
     } else {
       haplo_clusters$count_table[mother_index]<- haplo_clusters$count_table[mother_index]-1
     }
@@ -195,8 +197,9 @@ for (i in 1:kNumIter){
     unnorm_post<-(apply(llhd_stuff$haplo_counts,2,dp_prior,alpha=kAlpha))*llhd_stuff$clus_llhd
     draw_index <- match(1,rmultinom(n=1,size=1,prob=unnorm_post))
     
-    #now we need some logic depending on whether 1,2 or no new clusters were
-    #instantiated. This updates cluster counts to reflect the new assignment.
+    ##update cluster counts to reflect the new assignment
+    #we need some logic depending on whether 1,2 or no new clusters were 
+    #instantiated.
     if (draw_index==1){
       #2 new clusters are created, so we need to draw from the base distribution
       mix_indices = which(obs$combo[,j]==2);
@@ -204,31 +207,72 @@ for (i in 1:kNumIter){
       father = obs$combo[,j]; father[mix_indices]=lbl_choice;
       mother = obs$combo[,j]; mother[mix_indices]=!lbl_choice;
       
-      #because we are drawing from a base distribution with finite support we might have collisions
-      father_index <- match(paste(father,collapse=","),names(haplo_clusters$count_table),nomatch=0)
-      if (father_index==0){
+      #because we are drawing from a base distribution with finite support we
+      #might have collisions. The easiest way to deal with this is to check if
+      #the newly created thing is equivalent to one of the other draw options
+      is.equiv <- function (parent_lbls){
+        #a helper function that takes a pair of (father,mother) labels and
+        #checks if either is the same as the randomly generated father
+        return (any(unlist(lapply(parent_lbls,paste,collapse=","))==paste(father,collapse=",")))  
+      }
+      equiv_draw_index<-match(T,lapply(llhd_stuff$lbls[],is.equiv),nomatch=0)
+      
+      if (equiv_draw_index==0){
         #no collisions, we need to create the 2 new cluster labels (if it was
         #only 1 that needed to be created then the draw index wouldn't be 1)
         father_name<-paste(father,collapse=",")
         mother_name<-paste(mother,collapse=",")
-        num_clust<-length(haplo_clusters$count_table);
         
-        haplo_clusters$count_table <- c(haplo_clusters$count_table,1,1)
-        names(haplo_clusters$count_table)[c(num_clust,(num_clust+1))]=
-          c(father_name,mother_name)
+        haplo_clusters$count_table <- c(1,1,haplo_clusters$count_table)
+        haplo_clusters$word<-append(list(father,mother),haplo_clusters$word)
+        haplo_clusters$hap_names<-c(father_name,mother_name,haplo_clusters$hap_names)
         
-        haplo_clusters$word=append(haplo_clusters$word,list(father,mother))
-        names(haplo_clusters$word)[c(num_clust,(num_clust+1))]=
-          c(father_name,mother_name)
+        draw_index <- equiv_draw_index
+        
       } else {
-        #if there was a collision we just need to update the counts as appropriate
-        #is it gaurenteed that if the father collides then the mother does as well?
+        #in this case the newly instantiated pair of clusters is the same as 
+        #one of the compatible clusters found by the llhd function, so we can 
+        #do a bit of a hack by just changing the draw index and using the
+        #logic appropriate to the equivalent draw
+        draw_index <-equiv_draw_index
       }
-      
-    } else if (llhd_stuff$haplo_counts[draw_index]==0){
-      
-    } else {
-      
+    } 
+        
+    if (draw_index != 0) {
+    #if the draw index is 0 it means that we have just generated 2 new clusters
+    #that were not equivalent to any of the clusters instantiated by the llhd 
+    #function, so none of the below options apply
+      if (llhd_stuff$haplo_counts[2,draw_index]==0){
+        #in this case exactly 1 new cluster was instantiated (by convention it's
+        #always the mother that's the new cluster)
+        
+        father=llhd_stuff$lbls[[draw_index]]$father
+        #note that although mother is a not yet instantiated label the draw was already made in  the llhd function
+        mother=llhd_stuff$lbls[[draw_index]]$mother
+        
+        #update counts to reflect the new father label
+        new_father_index <- match(paste(father,collapse=","),haplo_clusters$hap_names,nomatch=0)
+        haplo_clusters$count_table[new_father_index] <- haplo_clusters$count_table[new_father_index]+1
+        
+        #create a new cluster for the mother label
+        mother_name<-paste(mother,collapse=",")
+        
+        haplo_clusters$count_table <- c(1,haplo_clusters$count_table)
+        haplo_clusters$word=append(mother,haplo_clusters$word)
+        haplo_clusters$hap_names<-c(mother_name,haplo_clusters$hap_names)
+        
+      } else {
+        #both clusters are already instantiated, so we just update the counts
+        father=llhd_stuff$lbls[[draw_index]]$father
+        mother=llhd_stuff$lbls[[draw_index]]$mother
+        
+        new_father_index <- match(paste(father,collapse=","),haplo_clusters$hap_names,nomatch=0)
+        new_mother_index <- match(paste(mother,collapse=","),haplo_clusters$hap_names,nomatch=0)
+        haplo_clusters$count_table[c(new_father_index,new_mother_index)] <- 
+        haplo_clusters$count_table[c(new_father_index,new_mother_index)] + c(1,1)
+      }
     }
+    ##all that remains is to update the labels for the jth observation
+    obs$lbls[[j]]=list(father=father,mother=mother)
   }
 }

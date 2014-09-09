@@ -167,7 +167,7 @@ dp_prior<-function(cluster_counts,alpha){
 #I'm setting this in a pretty cheaty way for testing, using that the number of
 #clusters is asymptotically alpha*log(n) and the true value is 44
 kAlpha=17; 
-kNumIter=10; #way too low, just for simple testing
+kNumIter=500; #way too low, just for simple testing
 
 for (i in 1:kNumIter){
   #randomly permute the data at each step
@@ -237,11 +237,11 @@ for (i in 1:kNumIter){
         draw_index <-equiv_draw_index
       }
     } 
-        
+    
     if (draw_index != 0) {
-    #if the draw index is 0 it means that we have just generated 2 new clusters
-    #that were not equivalent to any of the clusters instantiated by the llhd 
-    #function, so none of the below options apply
+      #if the draw index is 0 it means that we have just generated 2 new clusters
+      #that were not equivalent to any of the clusters instantiated by the llhd 
+      #function, so none of the below options apply
       if (llhd_stuff$haplo_counts[2,draw_index]==0){
         #in this case exactly 1 new cluster was instantiated (by convention it's
         #always the mother that's the new cluster)
@@ -258,7 +258,7 @@ for (i in 1:kNumIter){
         mother_name<-paste(mother,collapse=",")
         
         haplo_clusters$count_table <- c(1,haplo_clusters$count_table)
-        haplo_clusters$word=append(mother,haplo_clusters$word)
+        haplo_clusters$word<-append(list(mother),haplo_clusters$word)
         haplo_clusters$hap_names<-c(mother_name,haplo_clusters$hap_names)
         
       } else {
@@ -269,7 +269,7 @@ for (i in 1:kNumIter){
         new_father_index <- match(paste(father,collapse=","),haplo_clusters$hap_names,nomatch=0)
         new_mother_index <- match(paste(mother,collapse=","),haplo_clusters$hap_names,nomatch=0)
         haplo_clusters$count_table[c(new_father_index,new_mother_index)] <- 
-        haplo_clusters$count_table[c(new_father_index,new_mother_index)] + c(1,1)
+          haplo_clusters$count_table[c(new_father_index,new_mother_index)] + c(1,1)
       }
     }
     ##all that remains is to update the labels for the jth observation

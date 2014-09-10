@@ -68,6 +68,10 @@ tmp<-data_extract();
 obs<-tmp$obs; haplo_clusters<-tmp$init_haplo_clusters;
 rm(tmp); rm(data_extract);
 
+#we can forgoe all of the above preallocation by loading this handy RData file
+#that I've created which specifies a starting point (by doing all the allocation
+#above and a burn in of 5000 iterations with the Gibbs sampler)
+load("~/Code/Genetics/Data/5000_iter_burnin.RData")
 
 ###DP Gibbs sampler 
 #the idea is to sample from the posterior distribution of the labels at each
@@ -164,10 +168,12 @@ dp_prior<-function(cluster_counts,alpha){
 
 ###now we finally get to the sampler
 
-#I'm setting this in a pretty cheaty way for testing, using that the number of
-#clusters is asymptotically alpha*log(n) and the true value is 44
-kAlpha=17; 
-kNumIter=500; #way too low, just for simple testing
+#TODO(Victor) something smarter with alpha
+kAlpha=1; 
+kNumIter=5000; #way too low, just for simple testing
+
+lbl_save <- vector(mode="list",length=kNumIter)
+num_clus_save <- vector(mode="integer",length=kNumIter)
 
 for (i in 1:kNumIter){
   #randomly permute the data at each step
@@ -275,4 +281,7 @@ for (i in 1:kNumIter){
     ##all that remains is to update the labels for the jth observation
     obs$lbls[[j]]=list(father=father,mother=mother)
   }
+  lbl_save[i] <- list(obs$lbls)
+  num_clus_save[i] <- length(haplo_clusters$word)
+  
 }

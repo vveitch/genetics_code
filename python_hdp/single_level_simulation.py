@@ -3,8 +3,8 @@
 # draws a realization of a chunk of the genome of a population according to
 # my modification of Xing et al. DP model
 
-# todo: eventually what I'm actually going to what is the data by site (as well as by person)
-# so I should change the datastructure
+# todo: maybe make a person class that tracks the allele ids as well for convenience of testing
+# although I really only care about how accurately I can estimate the weights anyways
 
 import numpy as np
 import scipy.stats as sp
@@ -33,7 +33,7 @@ def draw_stick_breaking(alpha=1, max_atoms=1000, cutoff=1e-10):
 
 
 def draw_haplotype(alpha, beta, hap_length):
-    # returns a vector of probabilities, each of which is probability of allele = 1 at that site
+    # returns a vector of probabilities, each of which is probability of minor allele at that site
     # arguments:
     # alpha: shape parameter for each site
     # beta: shape parameter for each site
@@ -64,7 +64,7 @@ def draw_haplotypes(num_draws, alpha, beta, hap_length):
 
 
 def draw_person(weights, haplotypes):
-    # returns a list of tuples where each tuple is a (canonically ordered) pair of alleles
+    # returns a list where each entry is number of minor alleles at that site (0,1 or 2)
     # arguments:
     # weights: truncated list of DP weights
     # haplotypes: list of haplotypes (same length as list of weights)
@@ -82,7 +82,10 @@ def draw_person(weights, haplotypes):
         a2 = [np.random.binomial(1, p) for p in haplotypes[z2,]]
 
         # forget the phase by taking cannonical order as (0,1)
-        return map(lambda pair: (pair[1], pair[0]) if pair[0] == 1 else pair, zip(a1, a2))
+        # return map(lambda pair: (pair[1], pair[0]) if pair[0] == 1 else pair, zip(a1, a2))
+
+        # forget the phase by just returning the sum of the minor alleles
+        return map(sum, zip(a1, a2))
 
 
 def draw_people(num_people, weights, haplotypes):
@@ -95,11 +98,21 @@ def draw_people(num_people, weights, haplotypes):
 
 def main():
     np.random.seed(1)  # reproducibility
-    weights = draw_stick_breaking(10, 1000, 1e-10)
-    haplotypes = draw_haplotypes(weights.size, 1, 1, 10)
-    people = draw_people(1000, weights, haplotypes)
-    print people[1:100]
+    # todo: ask wei what she thinks about realistic parameters for DP and haplotypes
 
+    weights = draw_stick_breaking(5, 1000, 1e-10)
+    # setting alpha=beta=small gives values close to either 0 or 1 whp,
+    # which matches my intuition for how these oughta look
+    haplotypes = draw_haplotypes(weights.size, 0.1, 0.1, 10)
+    people = draw_people(1000, weights, haplotypes)
+    # ballparking frequencies
+    print sum([z[2] == 0 for z in people])
+    print sum([z[2] == 1 for z in people])
+    print sum([z[2] == 2 for z in people])
+    # print haplotypes
+    # print weights
+    # with concentration parameter = 5 for the DP looks like top 20 entries consistently have combined prob >95%
+    print sum(sorted(weights,reverse=True)[0:20])
 
 if __name__ == '__main__':
     main()

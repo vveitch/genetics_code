@@ -33,11 +33,11 @@ def dirichlet_expectation(alpha):
     """
     if (len(alpha.shape) == 1):
         return (psi(alpha) - psi(np.sum(alpha)))
-    #in this case each alpha[k] is a diri parameter and return is appropriate matrix
-    elif(len(alpha.shape) == 2):
+    # in this case each alpha[k] is a diri parameter and return is appropriate matrix
+    elif (len(alpha.shape) == 2):
         return psi(alpha) - psi(np.sum(alpha, 1))[:, np.newaxis]
-    #case: each alpha[k,j] is a diri parameter and return is appropriate matrix
-    return psi(alpha) - psi(np.sum(alpha,2))[:,:,np.newaxis]
+    # case: each alpha[k,j] is a diri parameter and return is appropriate matrix
+    return psi(alpha) - psi(np.sum(alpha, 2))[:, :, np.newaxis]
 
 
 class SVI_fixed_K_single_level:
@@ -87,27 +87,32 @@ class SVI_fixed_K_single_level:
         self._exp_E_log_pi = np.exp(self._Elogbeta)
 
         # initialize the variational distribution q(theta|gamma)
-        # gamma_ktj = gamma[k,t,j] (up to off by 1 errors anyways)
+        # gamma_ktj = gamma[k,t,j] (up to indexing starting at 1 vs indexing starting at 0 anyways)
         self._gamma = 0.1 * np.random.gamma(100., 1. / 100, [self._K, self._T, 2])
-        #the return of function has the structure E_logs_theta[j,k] = (E[log(theta_jk),E(log(1-theta_jk)])
+        # the return of function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = dirichlet_expectation(self._gamma)
 
-    def update_local(self, observed_snps):
-        #return the sufficient stats needed to compute the global update
+    def update_local(self, obs_snps):
+        # return the sufficient stats needed to compute the global update
 
-        batchD = len(wordids)
+        batchN = len(obs_snps)
 
-        # Initialize the variational distribution q(theta|gamma) for
-        # the mini-batch
-        gamma = 1 * np.random.gamma(100., 1. / 100., (batchD, self._K))
-        Elogtheta = dirichlet_expectation(gamma)
-        expElogtheta = np.exp(Elogtheta)
+        # Initialize the variational distribution q(z|phi) for the mini-batch
+        phi = 1 * np.random.dirichlet(np.ones(self._K), (batchN, self._K))
 
-        sstats = np.zeros(self._lambda.shape)
-        # Now, for each document d update that document's gamma and phi
+        # Initialize the variational distribution q(c|xi) for the mini-batch
+        # note that these parameters are only relevant when obs_snps[n,t]=1
+        # so much of this will be irrelevant
+        xi = 1 * np.random.beta(1,1,(batchN,self._T))
+
+        lambda_sstats = np.zeros(self._lambda.shape)
+        gamma_sstats = np.zeros(self._gamma.shape)
+
+        # Now, for each person n update that person's phi and xi
         it = 0
         meanchange = 0
-        for d in range(0, batchD):
+        for n in range(0, batchN):
+            #todo: from here
             print sum(wordcts[d])
             # These are mostly just shorthand (but might help cache locality)
             ids = wordids[d]
@@ -167,22 +172,21 @@ class SVI_fixed_K_single_level:
         # Do a local update to phi | lambda,gamma and xi | lambda, gamma
         # for this mini-batch. This also returns the information about phi and gamma that
         # we need to update lambda and gamma.
-        (lambda_suff_stats, xi_suff_stats) = self.update_local(observed_snps)
+        (lambda_sstats, gamma_sstats) = self.update_local(observed_snps)
 
         # Update lambda
         self._lambda = self._lambda * (1 - rhos) + \
-                       rhos * (self._eta + self._N / observed_snps.shape[0] * lambda_suff_stats)
+                       rhos * (self._eta + self._N / len(observed_snps) * lambda_sstats)
         self._E_log_pi = dirichlet_expectation(self._lambda)
         self._exp_E_log_pi = np.exp(self._Elogbeta)
 
         # Update gamma
-        self._gamma = self._gamma * (1 - rhos) + rhos * (xi_suff_stats)
-        #the return of function has the structure E_logs_theta[j,k] = (E[log(theta_jk),E(log(1-theta_jk)])
+        self._gamma = self._gamma * (1 - rhos) + rhos * (gamma_sstats)
+        # the return of this function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = dirichlet_expectation(self._gamma)
 
         # Update iteration counter
         self._updatect += 1
-
 
 
 def main():

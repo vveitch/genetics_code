@@ -33,7 +33,11 @@ def dirichlet_expectation(alpha):
     """
     if (len(alpha.shape) == 1):
         return (psi(alpha) - psi(np.sum(alpha)))
-    return (psi(alpha) - psi(np.sum(alpha, 1))[:, np.newaxis])
+    #in this case each alpha[k] is a diri parameter and return is appropriate matrix
+    elif(len(alpha.shape) == 2):
+        return psi(alpha) - psi(np.sum(alpha, 1))[:, np.newaxis]
+    #case: each alpha[k,j] is a diri parameter and return is appropriate matrix
+    return psi(alpha) - psi(np.sum(alpha,2))[:,:,np.newaxis]
 
 
 class SVI_fixed_K_single_level:
@@ -85,10 +89,12 @@ class SVI_fixed_K_single_level:
         # initialize the variational distribution q(theta|gamma)
         # gamma_ktj = gamma[k,t,j] (up to off by 1 errors anyways)
         self._gamma = 0.1 * np.random.gamma(100., 1. / 100, [self._K, self._T, 2])
-        #todo: a function to compute E[log(theta_kt)] and E[log(1-theta_kt)]
-        #self._E_logs_theta = beta_expectation(self._gamma)
+        # todo: a function to compute E[log(theta_kt)] and E[log(1-theta_kt)]
+        # self._E_logs_theta = beta_expectation(self._gamma)
 
     def update_local(self, observed_snps):
+        #return the sufficient stats needed to compute the global update
+
         batchD = len(wordids)
 
         # Initialize the variational distribution q(theta|gamma) for
@@ -148,9 +154,7 @@ class SVI_fixed_K_single_level:
         uses the result of that update to update the variational
         parameters for the global variables (q(pi|lambda) & q(theta|gamma))
 
-        todo: decide whether to use matrix/vector structure instead and then update accordingly
-        Arguments:
-        observed_snps:  List of snp observations of n people at t contiguous sites.
+       observed_snps:  numpy array of n people at t contiguous sites.
         Each observation is represented as a list of minor allele counts
 
         Returns phi, the parameters to the variational distribution
@@ -160,26 +164,25 @@ class SVI_fixed_K_single_level:
 
         """
 
-        # rhot will be between 0 and 1, and says how much to weight
+        # rhos will be between 0 and 1, and says how much to weight
         # the information we got from this mini-batch.
-        rhot = pow(self._tau0 + self._updatect, -self._kappa)
-        self._rhot = rhot
+        rhos = pow(self._tau0 + self._updatect, -self._kappa)
+        self._rhos = rhos
 
         # Do a local update to phi | lambda,gamma and xi | lambda, gamma
         # for this mini-batch. This also returns the information about phi and gamma that
         # we need to update lambda and gamma.
-        (phi, xi) = self.update_local(observed_snps)
+        (lambda_suff_stats, xi_suff_stats) = self.update_local(observed_snps)
 
         # Update lambda
-        #todo: derive the expectations
-        self._lambda = self._lambda * (1 - rhot) + \
-                       rhot * (self._eta + self._D * sstats / len(wordids))
-        self._Elogbeta = dirichlet_expectation(self._lambda)
-        self._expElogbeta = np.exp(self._Elogbeta)
+        self._lambda = self._lambda * (1 - rhos) + \
+                       rhos * (self._eta + self._N / observed_snps.shape[0] * lambda_suff_stats)
+        self._E_log_pi = dirichlet_expectation(self._lambda)
+        self._exp_E_log_pi = np.exp(self._Elogbeta)
 
         # Update gamma
-        self._gamma = self._gamma * (1-rhot) + \
-                        rhot * (todo)
+        self._gamma = self._gamma * (1 - rhos) + \
+                      rhos * (xi_suff_stats)
 
         # Update iteration counter
         self._updatect += 1

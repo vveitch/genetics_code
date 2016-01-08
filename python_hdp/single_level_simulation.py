@@ -109,6 +109,8 @@ def main():
     people = draw_people(1000, weights, haplotypes)
     people = np.asarray(people)
 
+    print(people[0:5]).shape[0]
+
     # ballparking frequencies
     print sum((people==0))
     print sum((people==1))

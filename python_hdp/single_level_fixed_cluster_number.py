@@ -19,9 +19,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import sys, re, time, string
+import sys
 import numpy as np
-from scipy.special import gammaln, psi
+from scipy.special import psi
 
 np.random.seed(100000001)
 mean_change_thresh = 0.001
@@ -89,8 +89,8 @@ class SVI_fixed_K_single_level:
         # initialize the variational distribution q(theta|gamma)
         # gamma_ktj = gamma[k,t,j] (up to off by 1 errors anyways)
         self._gamma = 0.1 * np.random.gamma(100., 1. / 100, [self._K, self._T, 2])
-        # todo: a function to compute E[log(theta_kt)] and E[log(1-theta_kt)]
-        # self._E_logs_theta = beta_expectation(self._gamma)
+        #the return of function has the structure E_logs_theta[j,k] = (E[log(theta_jk),E(log(1-theta_jk)])
+        self._E_logs_theta = dirichlet_expectation(self._gamma)
 
     def update_local(self, observed_snps):
         #return the sufficient stats needed to compute the global update
@@ -157,11 +157,6 @@ class SVI_fixed_K_single_level:
        observed_snps:  numpy array of n people at t contiguous sites.
         Each observation is represented as a list of minor allele counts
 
-        Returns phi, the parameters to the variational distribution
-        over the haplotype indicators for people analyzed in this batch.
-        These are probably inaccurate and in any event are not very interesting,
-        I'm just returning them to make this look like online_LDA
-
         """
 
         # rhos will be between 0 and 1, and says how much to weight
@@ -181,13 +176,13 @@ class SVI_fixed_K_single_level:
         self._exp_E_log_pi = np.exp(self._Elogbeta)
 
         # Update gamma
-        self._gamma = self._gamma * (1 - rhos) + \
-                      rhos * (xi_suff_stats)
+        self._gamma = self._gamma * (1 - rhos) + rhos * (xi_suff_stats)
+        #the return of function has the structure E_logs_theta[j,k] = (E[log(theta_jk),E(log(1-theta_jk)])
+        self._E_logs_theta = dirichlet_expectation(self._gamma)
 
         # Update iteration counter
         self._updatect += 1
 
-        return phi, xi
 
 
 def main():

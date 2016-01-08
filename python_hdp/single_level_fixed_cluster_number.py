@@ -36,51 +36,59 @@ def dirichlet_expectation(alpha):
     return (psi(alpha) - psi(np.sum(alpha, 1))[:, np.newaxis])
 
 
-class OnlineLDA:
+class SVI_fixed_K_single_level:
     """
-    Implements online VB for LDA as described in (Hoffman et al. 2010).
+    Implements stochastic variational inference for genetics model
+    with single level and fixed number of haplotypes
     """
 
-    def __init__(self, vocab, K, D, alpha, eta, tau0, kappa):
+    def __init__(self, K, N, alpha, beta, eta, tau0, kappa):
         """
         Arguments:
-        K: Number of topics
-        vocab: A set of words to recognize. When analyzing documents, any word
-           not in this set will be ignored.
-        D: Total number of documents in the population. For a fixed corpus,
-           this is the size of the corpus. In the truly online setting, this
-           can be an estimate of the maximum number of documents that
-           could ever be seen.
-        alpha: Hyperparameter for prior on weight vectors theta
-        eta: Hyperparameter for prior on topics beta
+        K: Number of haplotypes
+        N: Total number of people in the population.
+        alpha: Hyperparameter for prior on haplotypes theta
+        beta: Hyperparameter for prior on haplotypes theta
+        eta: Hyperparameter for prior on haplotype weights pi
         tau0: A (positive) learning parameter that downweights early iterations
         kappa: Learning rate: exponential decay rate---should be between
              (0.5, 1.0] to guarantee asymptotic convergence.
 
+        todo: write equiv statement for genetics model
         Note that if you pass the same set of D documents in every time and
         set kappa=0 this class can also be used to do batch VB.
         """
-        self._vocab = dict()
-        for word in vocab:
-            word = word.lower()
-            word = re.sub(r'[^a-z]', '', word)
-            self._vocab[word] = len(self._vocab)
 
         self._K = K
-        self._W = len(self._vocab)
-        self._D = D
+        self._N = N
+
         self._alpha = alpha
+        self._beta = beta
         self._eta = eta
+
         self._tau0 = tau0 + 1
         self._kappa = kappa
+
+        # iteration counter, used for updating rho
         self._updatect = 0
 
-        # Initialize the variational distribution q(beta|lambda)
-        self._lambda = 1 * np.random.gamma(100., 1. / 100., (self._K, self._W))
-        self._Elogbeta = dirichlet_expectation(self._lambda)
-        self._expElogbeta = np.exp(self._Elogbeta)
+        # Initialize the variational distribution q(pi|lambda)
+        # todo: not totally sure this is a sensible initialization
+        # roughly this is all clusters have same expected weight, but w very high variance
+        # max(dirichlet(lambda)) tends to be 15-30%
+        # this does reflect what I think reality is,
+        # but maybe it starts the search at a nasty point in the parameter landscape
+        self._lambda = 0.1 * np.random.gamma(100., 1. / 100., self._K)
+        self._E_log_pi = dirichlet_expectation(self._lambda)
+        self._exp_E_log_pi = np.exp(self._Elogbeta)
 
-    def update_local(self, wordids, wordcts):
+        # initialize the variational distribution q(theta|gamma)
+        # gamma_ktj = gamma[k,t,j] (up to off by 1 errors anyways)
+        self._gamma = 0.1 * np.random.gamma(100., 1. / 100, [self._K, self._T, 2])
+        #todo: a function to compute E[log(theta_kt)] and E[log(1-theta_kt)]
+        #self._E_logs_theta = beta_expectation(self._gamma)
+
+    def update_local(self, observed_snps):
         batchD = len(wordids)
 
         # Initialize the variational distribution q(theta|gamma) for
@@ -134,45 +142,49 @@ class OnlineLDA:
 
         return ((gamma, sstats))
 
-    def update_global(self, wordids, wordcts):
+    def update_global(self, observed_snps):
         """
         Takes in a minibatch of data, does a local update and then
         uses the result of that update to update the variational
         parameters for the global variables (q(pi|lambda) & q(theta|gamma))
 
+        todo: decide whether to use matrix/vector structure instead and then update accordingly
         Arguments:
-        docs:  List of D documents. Each document must be represented
-               as a string. (Word order is unimportant.) Any
-               words not in the vocabulary will be ignored.
+        observed_snps:  List of snp observations of n people at t contiguous sites.
+        Each observation is represented as a list of minor allele counts
 
-        Returns gamma, the parameters to the variational distribution
-        over the topic weights theta for the documents analyzed in this
-        update.
+        Returns phi, the parameters to the variational distribution
+        over the haplotype indicators for people analyzed in this batch.
+        These are probably inaccurate and in any event are not very interesting,
+        I'm just returning them to make this look like online_LDA
 
-        Also returns an estimate of the variational bound for the
-        entire corpus for the OLD setting of lambda based on the
-        documents passed in. This can be used as a (possibly very
-        noisy) estimate of held-out likelihood.
         """
 
         # rhot will be between 0 and 1, and says how much to weight
         # the information we got from this mini-batch.
         rhot = pow(self._tau0 + self._updatect, -self._kappa)
         self._rhot = rhot
-        # Do an E step to update gamma, phi | lambda for this
-        # mini-batch. This also returns the information about phi that
-        # we need to update lambda.
-        (gamma, sstats) = self.do_e_step(wordids, wordcts)
-        # Estimate held-out likelihood for current values of lambda.
-        bound = self.approx_bound(wordids, wordcts, gamma)
-        # Update lambda based on documents.
+
+        # Do a local update to phi | lambda,gamma and xi | lambda, gamma
+        # for this mini-batch. This also returns the information about phi and gamma that
+        # we need to update lambda and gamma.
+        (phi, xi) = self.update_local(observed_snps)
+
+        # Update lambda
+        #todo: derive the expectations
         self._lambda = self._lambda * (1 - rhot) + \
                        rhot * (self._eta + self._D * sstats / len(wordids))
         self._Elogbeta = dirichlet_expectation(self._lambda)
         self._expElogbeta = np.exp(self._Elogbeta)
+
+        # Update gamma
+        self._gamma = self._gamma * (1-rhot) + \
+                        rhot * (todo)
+
+        # Update iteration counter
         self._updatect += 1
 
-        return gamma, bound
+        return phi, xi
 
 
 def main():

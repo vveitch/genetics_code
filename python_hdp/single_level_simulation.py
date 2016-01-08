@@ -33,7 +33,9 @@ def draw_stick_breaking(alpha=1, max_atoms=1000, cutoff=1e-10):
 
 
 def draw_haplotype(alpha, beta, hap_length):
-    # returns a vector of probabilities, each of which is probability of minor allele at that site
+    # returns a vector of probabilities, each of which is probability of allele=1 at that site
+    # warning: standard is to code minor allele as 1, but I'm not imposing that the "1" allele should
+    # be the less common one at the site
     # arguments:
     # alpha: shape parameter for each site
     # beta: shape parameter for each site
@@ -105,10 +107,13 @@ def main():
     # which matches my intuition for how these oughta look
     haplotypes = draw_haplotypes(weights.size, 0.1, 0.1, 10)
     people = draw_people(1000, weights, haplotypes)
+    people = np.asarray(people)
+
     # ballparking frequencies
-    print sum([z[2] == 0 for z in people])
-    print sum([z[2] == 1 for z in people])
-    print sum([z[2] == 2 for z in people])
+    print sum((people==0))
+    print sum((people==1))
+    print sum((people==2))
+
     # print haplotypes
     # print weights
     # with concentration parameter = 5 for the DP looks like top 20 entries consistently have combined prob >95%

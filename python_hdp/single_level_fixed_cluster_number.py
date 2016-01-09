@@ -21,7 +21,8 @@
 
 import sys
 import numpy as np
-from scipy.special import psi
+from scipy.special import psi  # digamma
+from scipy.special import expit  # inverse logit
 
 np.random.seed(100000001)
 mean_change_thresh = 0.001
@@ -36,7 +37,7 @@ def dirichlet_expectation(alpha):
     # in this case each alpha[k] is a diri parameter and return is appropriate matrix
     elif (len(alpha.shape) == 2):
         return psi(alpha) - psi(np.sum(alpha, 1))[:, np.newaxis]
-    # case: each alpha[k,j] is a diri parameter and return is appropriate matrix
+    # case: each alpha[k,j] is a diri parameter and return is appropriate tensor
     return psi(alpha) - psi(np.sum(alpha, 2))[:, :, np.newaxis]
 
 
@@ -103,16 +104,39 @@ class SVI_fixed_K_single_level:
         # Initialize the variational distribution q(c|xi) for the mini-batch
         # note that these parameters are only relevant when obs_snps[n,t]=1
         # so much of this will be irrelevant
-        xi = 1 * np.random.beta(1,1,(batchN,self._T))
+        xi = 1 * np.random.beta(1, 1, (batchN, self._T))
 
         lambda_sstats = np.zeros(self._lambda.shape)
         gamma_sstats = np.zeros(self._gamma.shape)
+
+        # shorthands
+        lp = self._E_log_pi
+        lts = self._E_logs_theta
 
         # Now, for each person n update that person's phi and xi
         it = 0
         meanchange = 0
         for n in range(0, batchN):
-            #todo: from here
+
+            xn = obs_snps[n]
+            # (xn==j) gives sites where minor allele count is j
+            # todo: rewrite tex equation to look more obviously like how I coded this
+            # todo: did I really do this right? the idea is to compute the appropriate equation for all k at once in a vectorized style
+            # contribution for phase unambiguous terms is same for both hap indicators
+            phi_n_base = lp + np.sum(lts[:, (xn == 0), 1], axis=1) + np.sum(lts[:, (xn == 2), 0], axis=1)
+
+            pa = (xn == 1) # shorthand for index of sites with ambiguous phases
+            #need to iterate to appx convergence between phase indicators c and probabilities phi
+
+            for it in range(0,100):
+                # phase ambiguous terms
+                phi_n1 = np.exp(phi_n_base + np.sum(xi_n[:, pa] * lts[:, pa, 1], axis=1) \
+                            + np.sum((1 - xi_n[:, pa]) * lts[:, pa, 0], axis=1))
+
+                phi_n2 = np.exp(phi_n_base + np.sum((1 - xi_n[:, pa]) * lts[:, pa, 1], axis=1) \
+                            + np.sum(xi_n[:, pa] * lts[:, pa, 0], axis=1))
+                xi_n = expit()#todo
+
             print sum(wordcts[d])
             # These are mostly just shorthand (but might help cache locality)
             ids = wordids[d]

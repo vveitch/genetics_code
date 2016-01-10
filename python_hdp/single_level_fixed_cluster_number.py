@@ -47,7 +47,7 @@ class SVI_fixed_K_single_level:
     with single level and fixed number of haplotypes
     """
 
-    def __init__(self, K, N, alpha, beta, eta, tau0, kappa):
+    def __init__(self, K, T, N, alpha, beta, eta, tau0, kappa):
         """
         Arguments:
         K: Number of haplotypes
@@ -65,6 +65,7 @@ class SVI_fixed_K_single_level:
         """
 
         self._K = K
+        self._T = T
         self._N = N
 
         self._alpha = alpha
@@ -85,7 +86,7 @@ class SVI_fixed_K_single_level:
         # but maybe it starts the search at a nasty point in the parameter landscape
         self._lambda = 0.1 * np.random.gamma(100., 1. / 100., self._K)
         self._E_log_pi = dirichlet_expectation(self._lambda)
-        self._exp_E_log_pi = np.exp(self._Elogbeta)
+        self._exp_E_log_pi = np.exp(self._E_log_pi)
 
         # initialize the variational distribution q(theta|gamma)
         # gamma_ktj = gamma[k,t,j] (up to indexing starting at 1 vs indexing starting at 0 anyways)
@@ -98,13 +99,9 @@ class SVI_fixed_K_single_level:
 
         batchN = len(obs_snps)
 
-        # Initialize the variational distribution q(z|phi) for the mini-batch
-        phi = 1 * np.random.dirichlet(np.ones(self._K), (batchN, self._K))
-
-        # Initialize the variational distribution q(c|xi) for the mini-batch
-        # note that these parameters are only relevant when obs_snps[n,t]=1
-        # so much of this will be irrelevant
-        xi = 1 * np.random.beta(1, 1, (batchN, self._T))
+        # Initialize the variational distribution q(z1|phi1) and q(z2|phi2) for the mini-batch
+        phi_1 = 1 * np.random.dirichlet(np.ones(self._K), (batchN, self._K))
+        phi_2 = 1 * np.random.dirichlet(np.ones(self._K), (batchN, self._K))
 
         lambda_sstats = np.zeros(self._lambda.shape)
         gamma_sstats = np.zeros(self._gamma.shape)
@@ -114,68 +111,49 @@ class SVI_fixed_K_single_level:
         lts = self._E_logs_theta
 
         # Now, for each person n update that person's phi and xi
-        it = 0
-        meanchange = 0
+        # meanchange = 0
         for n in range(0, batchN):
+            #data for nth person
+            #vv: the asarray here should be redundant, but pycharm was giving me grief for omitting it
+            xn = np.asarray(obs_snps[n])
 
-            xn = obs_snps[n]
             # (xn==j) gives sites where minor allele count is j
             # todo: rewrite tex equation to look more obviously like how I coded this
             # todo: did I really do this right? the idea is to compute the appropriate equation for all k at once in a vectorized style
+
             # contribution for phase unambiguous terms is same for both hap indicators
             phi_n_base = lp + np.sum(lts[:, (xn == 0), 1], axis=1) + np.sum(lts[:, (xn == 2), 0], axis=1)
 
             pa = (xn == 1) # shorthand for index of sites with ambiguous phases
+            xi_n = np.repeat(0.5,len(pa)) #set each xi to 1/2 initially, only tracking as many as req for phase ambig
             #need to iterate to appx convergence between phase indicators c and probabilities phi
 
             for it in range(0,100):
                 # phase ambiguous terms
-                phi_n1 = np.exp(phi_n_base + np.sum(xi_n[:, pa] * lts[:, pa, 1], axis=1) \
-                            + np.sum((1 - xi_n[:, pa]) * lts[:, pa, 0], axis=1))
+                phi_1[n] = np.exp(phi_n_base + np.sum(xi_n * lts[:, pa, 1], axis=1) \
+                            + np.sum((1 - xi_n) * lts[:, pa, 0], axis=1))
 
-                phi_n2 = np.exp(phi_n_base + np.sum((1 - xi_n[:, pa]) * lts[:, pa, 1], axis=1) \
-                            + np.sum(xi_n[:, pa] * lts[:, pa, 0], axis=1))
-                xi_n = expit()#todo
+                phi_2[n] = np.exp(phi_n_base + np.sum((1 - xi_n) * lts[:, pa, 1], axis=1) \
+                            + np.sum(xi_n * lts[:, pa, 0], axis=1))
 
-            print sum(wordcts[d])
-            # These are mostly just shorthand (but might help cache locality)
-            ids = wordids[d]
-            cts = wordcts[d]
-            gammad = gamma[d, :]
-            Elogthetad = Elogtheta[d, :]
-            expElogthetad = expElogtheta[d, :]
-            expElogbetad = self._expElogbeta[:, ids]
-            # The optimal phi_{dwk} is proportional to
-            # expElogthetad_k * expElogbetad_w. phinorm is the normalizer.
-            phinorm = np.dot(expElogthetad, expElogbetad) + 1e-100
-            # Iterate between gamma and phi until convergence
-            for it in range(0, 100):
-                lastgamma = gammad
-                # We represent phi implicitly to save memory and time.
-                # Substituting the value of the optimal phi back into
-                # the update for gamma gives this update. Cf. Lee&Seung 2001.
-                gammad = self._alpha + expElogthetad * \
-                                       np.dot(cts / phinorm, expElogbetad.T)
-                print gammad[:, np.newaxis]
-                Elogthetad = dirichlet_expectation(gammad)
-                expElogthetad = np.exp(Elogthetad)
-                phinorm = np.dot(expElogthetad, expElogbetad) + 1e-100
-                # If gamma hasn't changed much, we're done.
-                meanchange = np.mean(abs(gammad - lastgamma))
-                if (meanchange < meanchangethresh):
-                    break
-            gamma[d, :] = gammad
-            # Contribution of document d to the expected sufficient
-            # statistics for the M step.
-            sstats[:, ids] += np.outer(expElogthetad.T, cts / phinorm)
+                xi_n = expit((phi_2[n]-phi_1[n])*np.asmatrix((lts[:, pa, 0])-(lts[:, pa, 1])))
+                #todo: vv: maybe add some code to break early if these aren't changing much
+                # # If phi hasn't changed much, we're done.
+                # meanchange = np.mean(abs(phi - lastphi))
+                # if (meanchange < meanchangethresh):
+                #     break
 
-        # This step finishes computing the sufficient statistics for the
-        # M step, so that
-        # sstats[k, w] = \sum_d n_{dw} * phi_{dwk}
-        # = \sum_d n_{dw} * exp{Elogtheta_{dk} + Elogbeta_{kw}} / phinorm_{dw}.
-        sstats = sstats * self._expElogbeta
+            lambda_sstats += (phi_1[n]+phi_2[n])
 
-        return ((gamma, sstats))
+            #increment alpha parameter of beta dist when x_nj = 1
+            gamma_sstats[:,(xn == 0),0] += (phi_1[n]+phi_2[n])
+            gamma_sstats[:,(xn == 1),0] += xi_n*phi_2[n] +(1-xi_n)*phi_1[n]
+
+            #increment beta parameter of beta dist when x_nj = 0
+            gamma_sstats[:,(xn == 2),1] += phi_1[n]+phi_2[n]
+            gamma_sstats[:,(xn == 1),1] += xi_n*phi_1[n] +(1-xi_n)*phi_2[n]
+
+        return lambda_sstats, gamma_sstats
 
     def update_global(self, observed_snps):
         """
@@ -191,7 +169,6 @@ class SVI_fixed_K_single_level:
         # rhos will be between 0 and 1, and says how much to weight
         # the information we got from this mini-batch.
         rhos = pow(self._tau0 + self._updatect, -self._kappa)
-        self._rhos = rhos
 
         # Do a local update to phi | lambda,gamma and xi | lambda, gamma
         # for this mini-batch. This also returns the information about phi and gamma that
@@ -202,7 +179,7 @@ class SVI_fixed_K_single_level:
         self._lambda = self._lambda * (1 - rhos) + \
                        rhos * (self._eta + self._N / len(observed_snps) * lambda_sstats)
         self._E_log_pi = dirichlet_expectation(self._lambda)
-        self._exp_E_log_pi = np.exp(self._Elogbeta)
+        self._exp_E_log_pi = np.exp(self._E_log_pi)
 
         # Update gamma
         self._gamma = self._gamma * (1 - rhos) + rhos * (gamma_sstats)

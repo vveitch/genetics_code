@@ -67,8 +67,11 @@ class SVI_fixed_K_single_level:
         self._T = T
         self._N = N
 
-        self._alpha = alpha
-        self._beta = beta
+        #theta dist hyperparams
+        self._alpha_beta = np.ones([self._K, self._T, 2])
+        self._alpha_beta[:,:,0] = alpha*self._alpha_beta[:,:,0]
+        self._alpha_beta[:,:,1] = beta*self._alpha_beta[:,:,1]
+        #pi dist hyperparams
         self._eta = eta
 
         self._tau0 = tau0 + 1
@@ -79,17 +82,16 @@ class SVI_fixed_K_single_level:
 
         # Initialize the variational distribution q(pi|lambda)
         # todo: not totally sure this is a sensible initialization
-        # roughly this is all clusters have same expected weight, but w very high variance
-        # max(dirichlet(lambda)) tends to be 15-30%
-        # this does reflect what I think reality is,
-        # but maybe it starts the search at a nasty point in the parameter landscape
-        self._lambda = 0.1 * np.random.gamma(100., 1. / 100., self._K)
+        self._lambda = np.random.gamma(100., 1. / 100., self._K)
         self._E_log_pi = dirichlet_expectation(self._lambda)
         self._exp_E_log_pi = np.exp(self._E_log_pi)
 
         # initialize the variational distribution q(theta|gamma)
         # gamma_ktj = gamma[k,t,j] (up to indexing starting at 1 vs indexing starting at 0 anyways)
-        self._gamma = 0.1 * np.random.gamma(100., 1. / 100, [self._K, self._T, 2])
+
+        # todo: adding a factor of 0.1 here means the haplotypes will be quite variable, which will cause the algorithm to start expressing a
+        # strong preference in local and global variables right away... not sure if that's actually desirable
+        self._gamma = np.random.gamma(100., 1. / 100, [self._K, self._T, 2])
         # the return of function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = dirichlet_expectation(self._gamma)
 
@@ -99,8 +101,8 @@ class SVI_fixed_K_single_level:
         batchN = len(obs_snps)
 
         # preallocate the variational distribution q(z1|phi1) and q(z2|phi2) for the mini-batch
-        phi_1 = np.ones((batchN, self._K))
-        phi_2 = np.ones((batchN, self._K))
+        phi_1 = np.zeros((batchN, self._K))
+        phi_2 = np.zeros((batchN, self._K))
 
         lambda_sstats = np.zeros(self._lambda.shape)
         gamma_sstats = np.zeros(self._gamma.shape)
@@ -128,6 +130,10 @@ class SVI_fixed_K_single_level:
             # need to iterate to appx convergence between phase indicators c and probabilities phi
 
             for it in range(0, 100):
+                #np.array makes these copies instead of just pointers
+                last_phi1 = np.array(phi_1[n])
+                last_phi2 = np.array(phi_2[n])
+
                 # phase ambiguous terms
                 phi_1[n] = np.exp(phi_n_base + np.sum(xi_n * lts[:, pa, 1], axis=1) \
                                   + np.sum((1 - xi_n) * lts[:, pa, 0], axis=1))
@@ -138,11 +144,10 @@ class SVI_fixed_K_single_level:
                 phi_2[n] = phi_2[n] / sum(phi_2[n])
 
                 xi_n = np.asarray(expit((phi_2[n] - phi_1[n]) * np.asmatrix((lts[:, pa, 0]) - (lts[:, pa, 1]))))
-                # todo: vv: maybe add some code to break early if these aren't changing much
-                # # If phi hasn't changed much, we're done.
-                # meanchange = np.mean(abs(phi - lastphi))
-                # if (meanchange < meanchangethresh):
-                #     break
+                # If phi hasn't changed much, we're done.
+                meanchange = np.mean(abs(phi_1[n] - last_phi1)+abs(phi_2[n]-last_phi2))
+                if (meanchange < 0.0001):
+                    break
 
             lambda_sstats += (phi_1[n] + phi_2[n])
 
@@ -184,9 +189,12 @@ class SVI_fixed_K_single_level:
         self._exp_E_log_pi = np.exp(self._E_log_pi)
 
         # Update gamma
-        self._gamma = self._gamma * (1 - rhos) + rhos * (gamma_sstats)
+        self._gamma = self._gamma * (1 - rhos) + \
+                      rhos * ((self._alpha_beta-1) + self._N / len(observed_snps) * gamma_sstats)
         # the return of this function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = dirichlet_expectation(self._gamma)
+
+        slam = sorted(self._lambda,reverse=True) #for debugging
 
         # Update iteration counter
         self._updatect += 1
@@ -203,17 +211,27 @@ def main():
     tau0 = 1
     kappa = 0.75
 
-    model = SVI_fixed_K_single_level(K,T,N,alpha,beta,eta,tau0,kappa)
-
-    # batch VI by passing in same data set each time
-#    model = SVI_fixed_K_single_level(K, T, N, alpha, beta, eta, tau0, kappa=0)
-
     data = np.load("simdata.npy")
 
-    for i in range(0, N, 10):
-        print i
-        model.update_global(data[i:(i+9),:])
+    # #SVI
+    # model = SVI_fixed_K_single_level(K,T,N,alpha,beta,eta,tau0,kappa)
+    #
+    # for i in range(0, N, 20):
+    #     print i
+    #     model.update_global(data[i:(i+19),:])
+    #     print sorted(model._lambda,reverse=True)
 
+    # batch VI by passing in same data set each time
+    model = SVI_fixed_K_single_level(K, T, N, alpha, beta, eta, tau0, kappa=0)
+
+    #batch
+    for i in range(0, 500):
+        print i
+        model.update_global(data)
+        print sorted(model._lambda,reverse=True)
+
+
+    np.save("SVI_output_batch",model._lambda)
 
 if __name__ == '__main__':
     main()

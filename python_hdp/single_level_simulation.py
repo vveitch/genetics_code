@@ -108,7 +108,7 @@ def main():
     haplotypes = draw_haplotypes(weights.size, 0.1, 0.1, 10)
     people = draw_people(1000, weights, haplotypes)
     people = np.asarray(people)
-
+    np.save("simweights",weights)
     np.save("simdata",people)
 
     # print(people[0:5]).shape[0]

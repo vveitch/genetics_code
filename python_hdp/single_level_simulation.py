@@ -109,17 +109,19 @@ def main():
     people = draw_people(1000, weights, haplotypes)
     people = np.asarray(people)
 
-    print(people[0:5]).shape[0]
+    np.save("simdata",people)
 
-    # ballparking frequencies
-    print sum((people==0))
-    print sum((people==1))
-    print sum((people==2))
-
-    # print haplotypes
-    # print weights
-    # with concentration parameter = 5 for the DP looks like top 20 entries consistently have combined prob >95%
-    print sum(sorted(weights,reverse=True)[0:20])
+    # print(people[0:5]).shape[0]
+    #
+    # # ballparking frequencies
+    # print sum((people==0))
+    # print sum((people==1))
+    # print sum((people==2))
+    #
+    # # print haplotypes
+    # # print weights
+    # # with concentration parameter = 5 for the DP looks like top 20 entries consistently have combined prob >95%
+    # print sum(sorted(weights,reverse=True)[0:20])
 
 if __name__ == '__main__':
     main()

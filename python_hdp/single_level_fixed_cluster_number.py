@@ -19,7 +19,6 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import sys
 import numpy as np
 from scipy.special import psi  # digamma
 from scipy.special import expit  # inverse logit
@@ -99,9 +98,9 @@ class SVI_fixed_K_single_level:
 
         batchN = len(obs_snps)
 
-        # Initialize the variational distribution q(z1|phi1) and q(z2|phi2) for the mini-batch
-        phi_1 = 1 * np.random.dirichlet(np.ones(self._K), (batchN, self._K))
-        phi_2 = 1 * np.random.dirichlet(np.ones(self._K), (batchN, self._K))
+        # preallocate the variational distribution q(z1|phi1) and q(z2|phi2) for the mini-batch
+        phi_1 = np.ones((batchN, self._K))
+        phi_2 = np.ones((batchN, self._K))
 
         lambda_sstats = np.zeros(self._lambda.shape)
         gamma_sstats = np.zeros(self._gamma.shape)
@@ -113,8 +112,8 @@ class SVI_fixed_K_single_level:
         # Now, for each person n update that person's phi and xi
         # meanchange = 0
         for n in range(0, batchN):
-            #data for nth person
-            #vv: the asarray here should be redundant, but pycharm was giving me grief for omitting it
+            # data for nth person
+            # vv: the asarray here should be redundant, but pycharm was giving me grief for omitting it
             xn = np.asarray(obs_snps[n])
 
             # (xn==j) gives sites where minor allele count is j
@@ -124,34 +123,37 @@ class SVI_fixed_K_single_level:
             # contribution for phase unambiguous terms is same for both hap indicators
             phi_n_base = lp + np.sum(lts[:, (xn == 0), 1], axis=1) + np.sum(lts[:, (xn == 2), 0], axis=1)
 
-            pa = (xn == 1) # shorthand for index of sites with ambiguous phases
-            xi_n = np.repeat(0.5,len(pa)) #set each xi to 1/2 initially, only tracking as many as req for phase ambig
-            #need to iterate to appx convergence between phase indicators c and probabilities phi
+            pa = (xn == 1)  # shorthand for index of sites with ambiguous phases
+            xi_n = np.random.beta(1, 1, sum(pa))  # set each relevant xi randomly
+            # need to iterate to appx convergence between phase indicators c and probabilities phi
 
-            for it in range(0,100):
+            for it in range(0, 100):
                 # phase ambiguous terms
                 phi_1[n] = np.exp(phi_n_base + np.sum(xi_n * lts[:, pa, 1], axis=1) \
-                            + np.sum((1 - xi_n) * lts[:, pa, 0], axis=1))
+                                  + np.sum((1 - xi_n) * lts[:, pa, 0], axis=1))
+                phi_1[n] = phi_1[n] / sum(phi_1[n])
 
                 phi_2[n] = np.exp(phi_n_base + np.sum((1 - xi_n) * lts[:, pa, 1], axis=1) \
-                            + np.sum(xi_n * lts[:, pa, 0], axis=1))
+                                  + np.sum(xi_n * lts[:, pa, 0], axis=1))
+                phi_2[n] = phi_2[n] / sum(phi_2[n])
 
-                xi_n = expit((phi_2[n]-phi_1[n])*np.asmatrix((lts[:, pa, 0])-(lts[:, pa, 1])))
-                #todo: vv: maybe add some code to break early if these aren't changing much
+                xi_n = np.asarray(expit((phi_2[n] - phi_1[n]) * np.asmatrix((lts[:, pa, 0]) - (lts[:, pa, 1]))))
+                # todo: vv: maybe add some code to break early if these aren't changing much
                 # # If phi hasn't changed much, we're done.
                 # meanchange = np.mean(abs(phi - lastphi))
                 # if (meanchange < meanchangethresh):
                 #     break
 
-            lambda_sstats += (phi_1[n]+phi_2[n])
+            lambda_sstats += (phi_1[n] + phi_2[n])
 
-            #increment alpha parameter of beta dist when x_nj = 1
-            gamma_sstats[:,(xn == 0),0] += (phi_1[n]+phi_2[n])
-            gamma_sstats[:,(xn == 1),0] += xi_n*phi_2[n] +(1-xi_n)*phi_1[n]
+            # increment alpha parameter of beta dist when x_nj = 1
+            # ([:,np.newaxis] for addition to each *column*)
+            gamma_sstats[:, (xn == 0), 0] += (phi_1[n] + phi_2[n])[:, np.newaxis]
+            gamma_sstats[:, (xn == 1), 0] += (np.outer(phi_1[n], xi_n) + np.outer(phi_2[n], (1 - xi_n)))
 
-            #increment beta parameter of beta dist when x_nj = 0
-            gamma_sstats[:,(xn == 2),1] += phi_1[n]+phi_2[n]
-            gamma_sstats[:,(xn == 1),1] += xi_n*phi_1[n] +(1-xi_n)*phi_2[n]
+            # increment beta parameter of beta dist when x_nj = 0
+            gamma_sstats[:, (xn == 2), 1] += (phi_1[n] + phi_2[n])[:, np.newaxis]
+            gamma_sstats[:, (xn == 1), 1] += (np.outer(phi_1[n], xi_n) + np.outer(phi_2[n], (1 - xi_n)))
 
         return lambda_sstats, gamma_sstats
 
@@ -191,29 +193,27 @@ class SVI_fixed_K_single_level:
 
 
 def main():
-    infile = sys.argv[1]
-    K = int(sys.argv[2])
-    alpha = float(sys.argv[3])
-    eta = float(sys.argv[4])
-    kappa = float(sys.argv[5])
-    S = int(sys.argv[6])
+    K = 30
+    T = 10
+    N = 1000
+    alpha = 0.1
+    beta = 0.1
+    eta = 0.1  # not sure about a good starter for this
+    # copied from OnlineLDAVB example
+    tau0 = 1
+    kappa = 0.75
 
-    docs = corpus.corpus()
-    docs.read_data(infile)
+    model = SVI_fixed_K_single_level(K,T,N,alpha,beta,eta,tau0,kappa)
 
-    vocab = open(sys.argv[7]).readlines()
-    model = OnlineLDA(vocab, K, 100000,
-                      0.1, 0.01, 1, 0.75)
-    for i in range(1000):
+    # batch VI by passing in same data set each time
+#    model = SVI_fixed_K_single_level(K, T, N, alpha, beta, eta, tau0, kappa=0)
+
+    data = np.load("simdata.npy")
+
+    for i in range(0, N, 10):
         print i
-        wordids = [d.words for d in docs.docs[(i * S):((i + 1) * S)]]
-        wordcts = [d.counts for d in docs.docs[(i * S):((i + 1) * S)]]
-        model.update_lambda(wordids, wordcts)
-        np.savetxt('/tmp/lambda%d' % i, model._lambda.T)
+        model.update_global(data[i:(i+9),:])
 
-
-# infile = open(infile)
-#     corpus.read_stream_data(infile, 100000)
 
 if __name__ == '__main__':
     main()

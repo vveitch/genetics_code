@@ -37,7 +37,15 @@ def dirichlet_expectation(alpha):
     elif (len(alpha.shape) == 2):
         return psi(alpha) - psi(np.sum(alpha, 1))[:, np.newaxis]
     # case: each alpha[k,j] is a diri parameter and return is appropriate tensor
-    return psi(alpha) - psi(np.sum(alpha, 2))[:, :, np.newaxis]
+
+def beta_expectation(alpha_beta):
+    """
+    :param alpha_beta: shape (K,T,2) nparray where alpha_beta[k,t,0] = alpha_kt and alpha_beta[k,t,1]=beta_kt
+    :return: a (K,T,2) nparray where r[k,t,0]=E(log theta_kt) and r[k,t,1]=E(log 1-theta_kt)
+    """
+    #note: seperated this out from diri_expect for ease of reading and 'cause I suspect it might be a source of bugs
+
+    return psi(alpha_beta) - psi(np.sum(alpha_beta, 2))[:, :, np.newaxis]
 
 
 class SVI_fixed_K_single_level:
@@ -93,7 +101,7 @@ class SVI_fixed_K_single_level:
         # strong preference in local and global variables right away... not sure if that's actually desirable
         self._gamma = np.random.gamma(100., 1. / 100, [self._K, self._T, 2])
         # the return of function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
-        self._E_logs_theta = dirichlet_expectation(self._gamma)
+        self._E_logs_theta = beta_expectation(self._gamma)
 
     def update_local(self, obs_snps):
         # return the sufficient stats needed to compute the global update
@@ -137,11 +145,11 @@ class SVI_fixed_K_single_level:
                 # phase ambiguous terms
                 phi_1[n] = np.exp(phi_n_base + np.sum(xi_n * lts[:, pa, 1], axis=1) \
                                   + np.sum((1 - xi_n) * lts[:, pa, 0], axis=1))
-                phi_1[n] = phi_1[n] / sum(phi_1[n])
+                phi_1[n] = phi_1[n] / sum(phi_1[n] + 1e-100)
 
                 phi_2[n] = np.exp(phi_n_base + np.sum((1 - xi_n) * lts[:, pa, 1], axis=1) \
                                   + np.sum(xi_n * lts[:, pa, 0], axis=1))
-                phi_2[n] = phi_2[n] / sum(phi_2[n])
+                phi_2[n] = phi_2[n] / sum(phi_2[n] + 1e-100)
 
                 xi_n = np.asarray(expit((phi_2[n] - phi_1[n]) * np.asmatrix((lts[:, pa, 0]) - (lts[:, pa, 1]))))
                 # If phi hasn't changed much, we're done.
@@ -154,7 +162,7 @@ class SVI_fixed_K_single_level:
             # increment alpha parameter of beta dist when x_nj = 1
             # ([:,np.newaxis] for addition to each *column*)
             gamma_sstats[:, (xn == 0), 0] += (phi_1[n] + phi_2[n])[:, np.newaxis]
-            gamma_sstats[:, (xn == 1), 0] += (np.outer(phi_1[n], xi_n) + np.outer(phi_2[n], (1 - xi_n)))
+            gamma_sstats[:, (xn == 1), 0] += (np.outer(phi_2[n], xi_n) + np.outer(phi_1[n], (1 - xi_n)))
 
             # increment beta parameter of beta dist when x_nj = 0
             gamma_sstats[:, (xn == 2), 1] += (phi_1[n] + phi_2[n])[:, np.newaxis]
@@ -192,7 +200,10 @@ class SVI_fixed_K_single_level:
         self._gamma = self._gamma * (1 - rhos) + \
                       rhos * ((self._alpha_beta-1) + self._N / len(observed_snps) * gamma_sstats)
         # the return of this function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
-        self._E_logs_theta = dirichlet_expectation(self._gamma)
+        self._E_logs_theta = beta_expectation(self._gamma)
+
+        print np.max(self._E_logs_theta)
+        print np.unravel_index(np.argmax(self._E_logs_theta),self._E_logs_theta.shape)
 
         slam = sorted(self._lambda,reverse=True) #for debugging
 
@@ -201,6 +212,8 @@ class SVI_fixed_K_single_level:
 
 
 def main():
+    np.random.seed(1)  # reproducibility
+
     K = 30
     T = 10
     N = 1000
@@ -222,13 +235,15 @@ def main():
     #     print sorted(model._lambda,reverse=True)
 
     # batch VI by passing in same data set each time
-    model = SVI_fixed_K_single_level(K, T, N, alpha, beta, eta, tau0, kappa=0)
+    model = SVI_fixed_K_single_level(K=K, T=T, N=N, alpha=alpha, beta=beta, eta=eta, tau0=tau0, kappa=0)
 
     #batch
     for i in range(0, 500):
         print i
+        if (i==7):
+            print "for debugging"
         model.update_global(data)
-        print sorted(model._lambda,reverse=True)
+ #       print sorted(model._lambda,reverse=True)
 
 
     np.save("SVI_output_batch",model._lambda)

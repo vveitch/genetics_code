@@ -198,7 +198,7 @@ class SVI_fixed_K_single_level:
 
         # Update gamma
         self._gamma = self._gamma * (1 - rhos) + \
-                      rhos * ((self._alpha_beta-1) + self._N / len(observed_snps) * gamma_sstats)
+                      rhos * (self._alpha_beta + self._N / len(observed_snps) * gamma_sstats)
         # the return of this function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = beta_expectation(self._gamma)
 

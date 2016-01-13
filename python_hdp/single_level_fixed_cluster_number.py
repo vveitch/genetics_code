@@ -21,7 +21,6 @@
 
 import numpy as np
 from scipy.special import psi  # digamma
-from scipy.special import expit  # inverse logit
 
 np.random.seed(100000001)
 mean_change_thresh = 0.001
@@ -37,6 +36,7 @@ def dirichlet_expectation(alpha):
     elif (len(alpha.shape) == 2):
         return psi(alpha) - psi(np.sum(alpha, 1))[:, np.newaxis]
     # case: each alpha[k,j] is a diri parameter and return is appropriate tensor
+
 
 def beta_expectation(alpha_beta):
     """
@@ -88,18 +88,23 @@ class SVI_fixed_K_single_level:
         # iteration counter, used for updating rho
         self._updatect = 0
 
+        #my best guess for a sensible intialization is a very large number of clusters
+        #each with comparable probabilities and very heterogeneous haplotypes
+        #OR: mostly homogeneous haplotypes coupled with pretty heterogeneous probabilities
+
         # Initialize the variational distribution q(pi|lambda)
         # todo: not totally sure this is a sensible initialization
-        self._lambda = np.random.gamma(100., 1. / 100., self._K)
+        # (2000,1./100) gives all probabilities within 1 order of magnitude of each other
+        self._lambda = np.random.gamma(2000, 1./100, self._K)
         self._E_log_pi = dirichlet_expectation(self._lambda)
         self._exp_E_log_pi = np.exp(self._E_log_pi)
 
         # initialize the variational distribution q(theta|gamma)
         # gamma_ktj = gamma[k,t,j] (up to indexing starting at 1 vs indexing starting at 0 anyways)
 
-        # todo: adding a factor of 0.1 here means the haplotypes will be quite variable, which will cause the algorithm to start expressing a
-        # strong preference in local and global variables right away... not sure if that's actually desirable
-        self._gamma = np.random.gamma(100., 1. / 100, [self._K, self._T, 2])
+        #TODO: figure out good starting value for this (and why 1,1 causes immediate crash)
+        self._gamma = np.random.gamma(100, 1./100, [self._K, self._T, 2])
+#        self._gamma = np.random.gamma(10,1./10,[self._K, self._T, 2])
         # the return of function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = beta_expectation(self._gamma)
 
@@ -133,40 +138,62 @@ class SVI_fixed_K_single_level:
             # contribution for phase unambiguous terms is same for both hap indicators
             phi_n_base = lp + np.sum(lts[:, (xn == 0), 1], axis=1) + np.sum(lts[:, (xn == 2), 0], axis=1)
 
-            pa = (xn == 1)  # shorthand for index of sites with ambiguous phases
-            xi_n = np.random.beta(1, 1, sum(pa))  # set each relevant xi randomly
-            # need to iterate to appx convergence between phase indicators c and probabilities phi
+            # ####PHASE AMBIGUOUS DATA INCLUDED####
+            #
+            # pa = (xn == 1)  # shorthand for index of sites with ambiguous phases
+            # #xi_n = np.random.beta(1, 1, sum(pa))  # set each relevant xi randomly
+            # #todo: setting xi_n to 0.5 causes the phase ambiguous terms to be ignored
+            # xi_n = 0.5*np.ones(sum(pa))
+            # # need to iterate to appx convergence between phase indicators c and probabilities phi
+            #
+            # for it in range(0, 100):
+            #     #np.array makes these copies instead of just pointers
+            #     last_phi1 = np.array(phi_1[n])
+            #     last_phi2 = np.array(phi_2[n])
+            #
+            #     # phase ambiguous terms
+            #     phi_1[n] = np.exp(phi_n_base + np.sum(xi_n * lts[:, pa, 1], axis=1) \
+            #                       + np.sum((1 - xi_n) * lts[:, pa, 0], axis=1)) + 1e-10
+            #     phi_1[n] = phi_1[n] / sum(phi_1[n])
+            #
+            #     phi_2[n] = np.exp(phi_n_base + np.sum((1 - xi_n) * lts[:, pa, 1], axis=1) \
+            #                       + np.sum(xi_n * lts[:, pa, 0], axis=1)) + 1e-10
+            #     phi_2[n] = phi_2[n] / sum(phi_2[n])
+            #
+            #     xi_n = np.asarray(expit((phi_2[n] - phi_1[n]) * np.asmatrix((lts[:, pa, 0]) - (lts[:, pa, 1]))))
+            #     # If phi hasn't changed much, we're done.
+            #     meanchange = np.mean(abs(phi_1[n] - last_phi1)+abs(phi_2[n]-last_phi2))
+            #     if (meanchange < 0.0001):
+            #         break
+            #
+            # lambda_sstats += (phi_1[n] + phi_2[n])
+            #
+            # # increment alpha parameter of beta dist when x_nj = 1
+            # # ([:,np.newaxis] for addition to each *column*)
+            # gamma_sstats[:, (xn == 0), 0] += (phi_1[n] + phi_2[n])[:, np.newaxis]
+            # gamma_sstats[:, (xn == 1), 0] += (np.outer(phi_2[n], xi_n) + np.outer(phi_1[n], (1 - xi_n)))
+            #
+            # # increment beta parameter of beta dist when x_nj = 0
+            # gamma_sstats[:, (xn == 2), 1] += (phi_1[n] + phi_2[n])[:, np.newaxis]
+            # gamma_sstats[:, (xn == 1), 1] += (np.outer(phi_1[n], xi_n) + np.outer(phi_2[n], (1 - xi_n)))
 
-            for it in range(0, 100):
-                #np.array makes these copies instead of just pointers
-                last_phi1 = np.array(phi_1[n])
-                last_phi2 = np.array(phi_2[n])
 
-                # phase ambiguous terms
-                phi_1[n] = np.exp(phi_n_base + np.sum(xi_n * lts[:, pa, 1], axis=1) \
-                                  + np.sum((1 - xi_n) * lts[:, pa, 0], axis=1))
-                phi_1[n] = phi_1[n] / sum(phi_1[n] + 1e-100)
+            #### PHASE AMBIGUOUS DATA LEFT OUT ####
 
-                phi_2[n] = np.exp(phi_n_base + np.sum((1 - xi_n) * lts[:, pa, 1], axis=1) \
-                                  + np.sum(xi_n * lts[:, pa, 0], axis=1))
-                phi_2[n] = phi_2[n] / sum(phi_2[n] + 1e-100)
+            phi_1[n]=np.exp(phi_n_base) + 1e-10
+            phi_1[n] = phi_1[n] / sum(phi_1[n])
 
-                xi_n = np.asarray(expit((phi_2[n] - phi_1[n]) * np.asmatrix((lts[:, pa, 0]) - (lts[:, pa, 1]))))
-                # If phi hasn't changed much, we're done.
-                meanchange = np.mean(abs(phi_1[n] - last_phi1)+abs(phi_2[n]-last_phi2))
-                if (meanchange < 0.0001):
-                    break
+            phi_2[n]=np.exp(phi_n_base) + 1e-10
+            phi_2[n] = phi_2[n] / sum(phi_2[n])
 
             lambda_sstats += (phi_1[n] + phi_2[n])
 
             # increment alpha parameter of beta dist when x_nj = 1
             # ([:,np.newaxis] for addition to each *column*)
             gamma_sstats[:, (xn == 0), 0] += (phi_1[n] + phi_2[n])[:, np.newaxis]
-            gamma_sstats[:, (xn == 1), 0] += (np.outer(phi_2[n], xi_n) + np.outer(phi_1[n], (1 - xi_n)))
 
             # increment beta parameter of beta dist when x_nj = 0
             gamma_sstats[:, (xn == 2), 1] += (phi_1[n] + phi_2[n])[:, np.newaxis]
-            gamma_sstats[:, (xn == 1), 1] += (np.outer(phi_1[n], xi_n) + np.outer(phi_2[n], (1 - xi_n)))
 
         return lambda_sstats, gamma_sstats
 
@@ -202,8 +229,9 @@ class SVI_fixed_K_single_level:
         # the return of this function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = beta_expectation(self._gamma)
 
-        print np.max(self._E_logs_theta)
-        print np.unravel_index(np.argmax(self._E_logs_theta),self._E_logs_theta.shape)
+        # #debugging
+        # print np.max(self._E_logs_theta)
+        # print np.unravel_index(np.argmax(self._E_logs_theta),self._E_logs_theta.shape)
 
         slam = sorted(self._lambda,reverse=True) #for debugging
 
@@ -214,7 +242,7 @@ class SVI_fixed_K_single_level:
 def main():
     np.random.seed(1)  # reproducibility
 
-    K = 30
+    K = 100
     T = 10
     N = 1000
     alpha = 0.1
@@ -238,12 +266,13 @@ def main():
     model = SVI_fixed_K_single_level(K=K, T=T, N=N, alpha=alpha, beta=beta, eta=eta, tau0=tau0, kappa=0)
 
     #batch
-    for i in range(0, 500):
-        print i
-        if (i==7):
-            print "for debugging"
+    for i in range(0, 1000):
+        if (np.mod(i,50)==0):
+            print i
+            print sorted(model._lambda,reverse=True)
+            print(sum(model._lambda))
         model.update_global(data)
- #       print sorted(model._lambda,reverse=True)
+
 
 
     np.save("SVI_output_batch",model._lambda)

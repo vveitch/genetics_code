@@ -10,7 +10,7 @@ import numpy as np
 import scipy.stats as sp
 
 
-def draw_stick_breaking(alpha=1, max_atoms=1000, cutoff=1e-10):
+def draw_stick_breaking(alpha=1, max_atoms=1000, cutoff=1e-100):
     # returns (truncated) list of DP atom probabilities
     # arguments:
     # alpha: concentration parameter of DP
@@ -71,13 +71,14 @@ def draw_person(weights, haplotypes):
     # weights: truncated list of DP weights
     # haplotypes: list of haplotypes (same length as list of weights)
 
+     # haplotype indices
+    z1 = np.random.multinomial(1, weights).nonzero()[0][0]
+    z2 = np.random.multinomial(1, weights).nonzero()[0][0]
+
     hap_length = haplotypes[0,].size
 
     # iterate over sites
-    for k in range(hap_length):
-        # haplotype indices
-        z1 = np.random.multinomial(1, weights).nonzero()[0][0]
-        z2 = np.random.multinomial(1, weights).nonzero()[0][0]
+    for t in range(hap_length):
 
         # alleles
         a1 = [np.random.binomial(1, p) for p in haplotypes[z1,]]
@@ -108,6 +109,8 @@ def main():
     haplotypes = draw_haplotypes(weights.size, 0.1, 0.1, 10)
     people = draw_people(1000, weights, haplotypes)
     people = np.asarray(people)
+
+    np.save("simhaps",haplotypes)
     np.save("simweights",weights)
     np.save("simdata",people)
 

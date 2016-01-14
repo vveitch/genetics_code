@@ -21,7 +21,9 @@
 
 import numpy as np
 from scipy.special import psi  # digamma
-from scipy.special import expit #inverse logit
+from scipy.special import expit  # inverse logit
+from functools import partial
+from sklearn.utils.extmath import cartesian
 
 np.random.seed(100000001)
 mean_change_thresh = 0.001
@@ -36,7 +38,7 @@ def dirichlet_expectation(alpha):
     # in this case each alpha[k] is a diri parameter and return is appropriate matrix
     elif (len(alpha.shape) == 2):
         return psi(alpha) - psi(np.sum(alpha, 1))[:, np.newaxis]
-    # case: each alpha[k,j] is a diri parameter and return is appropriate tensor
+        # case: each alpha[k,j] is a diri parameter and return is appropriate tensor
 
 
 def beta_expectation(alpha_beta):
@@ -44,7 +46,7 @@ def beta_expectation(alpha_beta):
     :param alpha_beta: shape (K,T,2) nparray where alpha_beta[k,t,0] = alpha_kt and alpha_beta[k,t,1]=beta_kt
     :return: a (K,T,2) nparray where r[k,t,0]=E(log theta_kt) and r[k,t,1]=E(log 1-theta_kt)
     """
-    #note: seperated this out from diri_expect for ease of reading and 'cause I suspect it might be a source of bugs
+    # note: seperated this out from diri_expect for ease of reading and 'cause I suspect it might be a source of bugs
 
     return psi(alpha_beta) - psi(np.sum(alpha_beta, 2))[:, :, np.newaxis]
 
@@ -76,11 +78,11 @@ class SVI_fixed_K_single_level:
         self._T = T
         self._N = N
 
-        #theta dist hyperparams
+        # theta dist hyperparams
         self._alpha_beta = np.ones([self._K, self._T, 2])
-        self._alpha_beta[:,:,0] = alpha*self._alpha_beta[:,:,0]
-        self._alpha_beta[:,:,1] = beta*self._alpha_beta[:,:,1]
-        #pi dist hyperparams
+        self._alpha_beta[:, :, 0] = alpha * self._alpha_beta[:, :, 0]
+        self._alpha_beta[:, :, 1] = beta * self._alpha_beta[:, :, 1]
+        # pi dist hyperparams
         self._eta = eta
 
         self._tau0 = tau0 + 1
@@ -89,27 +91,27 @@ class SVI_fixed_K_single_level:
         # iteration counter, used for updating rho
         self._updatect = 0
 
-        #my best guess for a sensible intialization is a very large number of clusters
-        #each with comparable probabilities and very heterogeneous haplotypes
-        #OR: mostly homogeneous haplotypes coupled with pretty heterogeneous probabilities
+        # my best guess for a sensible intialization is a very large number of clusters
+        # each with comparable probabilities and very heterogeneous haplotypes
+        # OR: mostly homogeneous haplotypes coupled with pretty heterogeneous probabilities
 
         # Initialize the variational distribution q(pi|lambda)
         # todo: not totally sure this is a sensible initialization
         # (2000,1./100) gives all probabilities within 1 order of magnitude of each other
-        self._lambda = np.random.gamma(2000, 1./100, self._K)
+        self._lambda = np.random.gamma(2000, 1. / 100, self._K)
         self._E_log_pi = dirichlet_expectation(self._lambda)
         self._exp_E_log_pi = np.exp(self._E_log_pi)
 
         # initialize the variational distribution q(theta|gamma)
         # gamma_ktj = gamma[k,t,j] (up to indexing starting at 1 vs indexing starting at 0 anyways)
 
-        #TODO: figure out good starting value for this (and why 1,1 causes immediate crash)
-        self._gamma = np.random.gamma(100, 1./100, [self._K, self._T, 2])
-#        self._gamma = np.random.gamma(10,1./10,[self._K, self._T, 2])
+        # TODO: figure out good starting value for this (and why 1,1 causes immediate crash)
+        self._gamma = np.random.gamma(1, 1. / 10, [self._K, self._T, 2])
+        #        self._gamma = np.random.gamma(10,1./10,[self._K, self._T, 2])
         # the return of function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = beta_expectation(self._gamma)
 
-    def update_local_no_phase_ambig(self,obs_snps):
+    def update_local_no_phase_ambig(self, obs_snps):
         # return the sufficient stats needed to compute the global update, as computed by
         # ignoring any contributions from sites with ambiguous phase (minor allele count =1)
         # with enough data this works pretty well, and is very fast
@@ -141,10 +143,10 @@ class SVI_fixed_K_single_level:
 
             #### PHASE AMBIGUOUS DATA LEFT OUT ####
 
-            phi_1[n]=np.exp(phi_n_base) + 1e-10
+            phi_1[n] = np.exp(phi_n_base) + 1e-100
             phi_1[n] = phi_1[n] / sum(phi_1[n])
 
-            phi_2[n]=np.exp(phi_n_base) + 1e-10
+            phi_2[n] = np.exp(phi_n_base) + 1e-100
             phi_2[n] = phi_2[n] / sum(phi_2[n])
 
             lambda_sstats += (phi_1[n] + phi_2[n])
@@ -158,14 +160,31 @@ class SVI_fixed_K_single_level:
 
         return lambda_sstats, gamma_sstats
 
+    def prob_c(self, c, phi_n_base, pa):
+        """
+        helper function to compute probabilities of phase indicators
+        :argument:
+        c: the bit string
+        phi_n_base: the phi component that doesn't depend on phase ambiguous terms
+        :return:
+        the probability of the bit string c
+        """
+        lts = self._E_logs_theta
+        phi_1 = np.exp(phi_n_base + np.sum(c * lts[:, pa, 1], axis=1) \
+                       + np.sum((1 - c) * lts[:, pa, 0], axis=1)) + 1e-100
+        phi_1 = phi_1 / sum(phi_1)
+
+        phi_2 = np.exp(phi_n_base + np.sum((1 - c) * lts[:, pa, 1], axis=1) \
+                       + np.sum(c * lts[:, pa, 0], axis=1)) + 1e-100
+        phi_2 = phi_2 / sum(phi_2)
+
+        # probability of the string is product of the probabilities at each site
+        return np.prod(expit((phi_2 - phi_1) * np.asmatrix((lts[:, pa, 0]) - (lts[:, pa, 1]))))
+
     def update_local(self, obs_snps):
         # return the sufficient stats needed to compute the global update
 
         batchN = len(obs_snps)
-
-        # preallocate the variational distribution q(z1|phi1) and q(z2|phi2) for the mini-batch
-        phi_1 = np.zeros((batchN, self._K))
-        phi_2 = np.zeros((batchN, self._K))
 
         lambda_sstats = np.zeros(self._lambda.shape)
         gamma_sstats = np.zeros(self._gamma.shape)
@@ -189,41 +208,83 @@ class SVI_fixed_K_single_level:
             phi_n_base = lp + np.sum(lts[:, (xn == 0), 1], axis=1) + np.sum(lts[:, (xn == 2), 0], axis=1)
 
             ####PHASE AMBIGUOUS DATA INCLUDED####
+            # this approach takes an exact sample of the phase indicators, if ever this code gets used for really large T
+            # then maybe this should be switched to a gibbs sampler or something
 
             pa = (xn == 1)  # shorthand for index of sites with ambiguous phases
-            xi_n = np.random.beta(100, 100, sum(pa))  # set each relevant xi randomly
-            # need to iterate to appx convergence between phase indicators c and probabilities phi
 
-            for it in range(0, 100):
-                #np.array makes these copies instead of just pointers
-                last_phi1 = np.array(phi_1[n])
-                last_phi2 = np.array(phi_2[n])
+            if (sum(pa)==0):
+                c=np.array([])
+            else:
+                # collection of all possible phase indicators
+                cs = np.zeros([sum(pa), 2])
+                cs[:, 1] += 1
+                cs = cartesian(cs)
 
-                # phase ambiguous terms
-                phi_1[n] = np.exp(phi_n_base + np.sum(xi_n * lts[:, pa, 1], axis=1) \
-                                  + np.sum((1 - xi_n) * lts[:, pa, 0], axis=1)) + 1e-10
-                phi_1[n] = phi_1[n] / sum(phi_1[n])
+                # sample the value of c
+                # todo: I could also compute an exact average using this...
+                phase_probs = map(partial(self.prob_c, phi_n_base=phi_n_base, pa=pa), cs)
+                # todo: vv: this shouldn't be necessary... either I made a mistake or it's because of expit overflow errors
+                phase_probs = phase_probs / sum(phase_probs)
+                #c = cs[np.random.multinomial(1, phase_probs).nonzero()[0][0]]
+                c = np.asarray(phase_probs*np.asmatrix(cs)) #exact expectation
 
-                phi_2[n] = np.exp(phi_n_base + np.sum((1 - xi_n) * lts[:, pa, 1], axis=1) \
-                                  + np.sum(xi_n * lts[:, pa, 0], axis=1)) + 1e-10
-                phi_2[n] = phi_2[n] / sum(phi_2[n])
+            # update the values of phi
+            phi_1_n = np.exp(phi_n_base + np.sum(c * lts[:, pa, 1], axis=1) \
+                             + np.sum((1 - c) * lts[:, pa, 0], axis=1)) + 1e-100
+            phi_1_n = phi_1_n / sum(phi_1_n)
 
-                xi_n = np.asarray(expit((phi_2[n] - phi_1[n]) * np.asmatrix((lts[:, pa, 0]) - (lts[:, pa, 1]))))
-                # If phi hasn't changed much, we're done.
-                meanchange = np.mean(abs(phi_1[n] - last_phi1)+abs(phi_2[n]-last_phi2))
-                if (meanchange < 0.0001):
-                    break
+            phi_2_n = np.exp(phi_n_base + np.sum((1 - c) * lts[:, pa, 1], axis=1) \
+                             + np.sum(c * lts[:, pa, 0], axis=1)) + 1e-100
+            phi_2_n = phi_2_n / sum(phi_2_n)
 
-            lambda_sstats += (phi_1[n] + phi_2[n])
+            lambda_sstats += (phi_1_n + phi_2_n)
 
             # increment alpha parameter of beta dist when x_nj = 1
             # ([:,np.newaxis] for addition to each *column*)
-            gamma_sstats[:, (xn == 0), 0] += (phi_1[n] + phi_2[n])[:, np.newaxis]
-            gamma_sstats[:, (xn == 1), 0] += (np.outer(phi_2[n], xi_n) + np.outer(phi_1[n], (1 - xi_n)))
+            gamma_sstats[:, (xn == 0), 0] += (phi_1_n + phi_2_n)[:, np.newaxis]
+            gamma_sstats[:, (xn == 1), 0] += (np.outer(phi_2_n, c) + np.outer(phi_1_n, (1 - c)))
 
             # increment beta parameter of beta dist when x_nj = 0
-            gamma_sstats[:, (xn == 2), 1] += (phi_1[n] + phi_2[n])[:, np.newaxis]
-            gamma_sstats[:, (xn == 1), 1] += (np.outer(phi_1[n], xi_n) + np.outer(phi_2[n], (1 - xi_n)))
+            gamma_sstats[:, (xn == 2), 1] += (phi_1_n + phi_2_n)[:, np.newaxis]
+            gamma_sstats[:, (xn == 1), 1] += (np.outer(phi_1_n, c) + np.outer(phi_2_n, (1 - c)))
+
+            # #direct VI approach. Unfortunately seems too sensitive to initial setting of xi_n
+            # xi_n = np.random.beta(1, 1, sum(pa))  # set each relevant xi randomly
+            # # need to iterate to appx convergence between phase indicators c and probabilities phi
+            #
+            # for it in range(0, 100):
+            #     # np.array makes these copies instead of just pointers
+            #     last_phi1 = np.array(phi_1[n])
+            #     last_phi2 = np.array(phi_2[n])
+            #
+            #     # phase ambiguous terms
+            #     phi_1[n] = np.exp(phi_n_base + np.sum(xi_n * lts[:, pa, 1], axis=1) \
+            #                       + np.sum((1 - xi_n) * lts[:, pa, 0], axis=1)) + 1e-100
+            #     phi_1[n] = phi_1[n] / sum(phi_1[n])
+            #
+            #     phi_2[n] = np.exp(phi_n_base + np.sum((1 - xi_n) * lts[:, pa, 1], axis=1) \
+            #                       + np.sum(xi_n * lts[:, pa, 0], axis=1)) + 1e-100
+            #     phi_2[n] = phi_2[n] / sum(phi_2[n])
+            #
+            #     xi_n = (phi_2[n] - phi_1[n]) * np.asmatrix((lts[:, pa, 0]) - (lts[:, pa, 1]))
+            #     xi_n = np.asarray(expit(xi_n))
+            #
+            #     # If phi hasn't changed much, we're done.
+            #     meanchange = np.mean(abs(phi_1[n] - last_phi1)+abs(phi_2[n]-last_phi2))
+            #     if (meanchange < 0.000001):
+            #         break
+
+            # lambda_sstats += (phi_1[n] + phi_2[n])
+            #
+            # # increment alpha parameter of beta dist when x_nj = 1
+            # # ([:,np.newaxis] for addition to each *column*)
+            # gamma_sstats[:, (xn == 0), 0] += (phi_1[n] + phi_2[n])[:, np.newaxis]
+            # gamma_sstats[:, (xn == 1), 0] += (np.outer(phi_2[n], xi_n) + np.outer(phi_1[n], (1 - xi_n)))
+            #
+            # # increment beta parameter of beta dist when x_nj = 0
+            # gamma_sstats[:, (xn == 2), 1] += (phi_1[n] + phi_2[n])[:, np.newaxis]
+            # gamma_sstats[:, (xn == 1), 1] += (np.outer(phi_1[n], xi_n) + np.outer(phi_2[n], (1 - xi_n)))
 
         return lambda_sstats, gamma_sstats
 
@@ -246,14 +307,14 @@ class SVI_fixed_K_single_level:
         # for this mini-batch. This also returns the information about phi and gamma that
         # we need to update lambda and gamma.
 
-        (lambda_sstats, gamma_sstats) = self.update_local(observed_snps)
+        # (lambda_sstats, gamma_sstats) = self.update_local(observed_snps)
 
-        # # to avoid phase ambig terms swamping out probability updates, do the first couple hundred iterations
-        # # using no phase ambig data - this should give a reasonable jumping off point for theta values
-        # if (self._updatect<=200):
-        #     (lambda_sstats, gamma_sstats) = self.update_local_no_phase_ambig(observed_snps)
-        # else:
-        #     (lambda_sstats, gamma_sstats) = self.update_local(observed_snps)
+        # to avoid phase ambig terms swamping out probability updates, do the first n iterations
+        # using no phase ambig data - this should give a reasonable jumping off point for theta values
+        if (self._updatect <= 50):
+            (lambda_sstats, gamma_sstats) = self.update_local_no_phase_ambig(observed_snps)
+        else:
+            (lambda_sstats, gamma_sstats) = self.update_local(observed_snps)
 
 
 
@@ -273,14 +334,14 @@ class SVI_fixed_K_single_level:
         # print np.max(self._E_logs_theta)
         # print np.unravel_index(np.argmax(self._E_logs_theta),self._E_logs_theta.shape)
 
-        slam = sorted(self._lambda,reverse=True) #for debugging
+        slam = sorted(self._lambda, reverse=True)  # for debugging
 
         # Update iteration counter
         self._updatect += 1
 
 
 def main():
-    np.random.seed(1)  # reproducibility
+    #  np.random.seed(1)  # reproducibility
 
     K = 100
     T = 10
@@ -305,17 +366,16 @@ def main():
     # batch VI by passing in same data set each time
     model = SVI_fixed_K_single_level(K=K, T=T, N=N, alpha=alpha, beta=beta, eta=eta, tau0=tau0, kappa=0)
 
-    #batch
+    # batch
     for i in range(0, 1000):
-        if (np.mod(i,5)==0):
+        if (np.mod(i, 5) == 0):
             print i
-            print sorted(model._lambda,reverse=True)
+            print sorted(model._lambda, reverse=True)
             print(sum(model._lambda))
         model.update_global(data)
 
+    np.save("SVI_output_batch", model._lambda)
 
-
-    np.save("SVI_output_batch",model._lambda)
 
 if __name__ == '__main__':
     main()

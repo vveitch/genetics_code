@@ -106,7 +106,7 @@ def main():
     weights = draw_stick_breaking(5, 1000, 1e-10)
     # setting alpha=beta=small gives values close to either 0 or 1 whp,
     # which matches my intuition for how these oughta look
-    haplotypes = draw_haplotypes(weights.size, 0.1, 0.1, 10)
+    haplotypes = draw_haplotypes(weights.size, 0.01, 0.01, 10)
     people = draw_people(1000, weights, haplotypes)
     people = np.asarray(people)
 

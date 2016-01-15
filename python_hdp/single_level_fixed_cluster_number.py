@@ -25,7 +25,7 @@ from scipy.special import expit  # inverse logit
 from functools import partial
 from sklearn.utils.extmath import cartesian
 
-np.random.seed(100000001)
+#np.random.seed(100000001)
 mean_change_thresh = 0.001
 
 
@@ -57,7 +57,7 @@ class SVI_fixed_K_single_level:
     with single level and fixed number of haplotypes
     """
 
-    def __init__(self, K, T, N, alpha, beta, eta, tau0, kappa):
+    def __init__(self, K, T, N, alpha, beta, eta, tau0, kappa, lambda_init=np.asarray([]), gamma_init=np.asarray([])):
         """
         Arguments:
         K: Number of haplotypes
@@ -96,18 +96,23 @@ class SVI_fixed_K_single_level:
         # OR: mostly homogeneous haplotypes coupled with pretty heterogeneous probabilities
 
         # Initialize the variational distribution q(pi|lambda)
-        # todo: not totally sure this is a sensible initialization
-        # (2000,1./100) gives all probabilities within 1 order of magnitude of each other
-        self._lambda = np.random.gamma(2000, 1. / 100, self._K)
+        if (lambda_init.shape==(self._K,)):
+            self._lambda = lambda_init
+        else:
+            # todo: not totally sure this is a sensible initialization
+            # (2000,1./100) gives all probabilities within 1 order of magnitude of each other
+            self._lambda = np.random.gamma(2000, 1. / 100, self._K)
         self._E_log_pi = dirichlet_expectation(self._lambda)
         self._exp_E_log_pi = np.exp(self._E_log_pi)
 
         # initialize the variational distribution q(theta|gamma)
         # gamma_ktj = gamma[k,t,j] (up to indexing starting at 1 vs indexing starting at 0 anyways)
-
-        # TODO: figure out good starting value for this (and why 1,1 causes immediate crash)
-        self._gamma = np.random.gamma(1, 1. / 10, [self._K, self._T, 2])
-        #        self._gamma = np.random.gamma(10,1./10,[self._K, self._T, 2])
+        if (gamma_init.shape==(self._K, self._T, 2)):
+            self._gamma = gamma_init
+        else:
+            # TODO: figure out good starting value for this (and why 1,1 causes immediate crash)
+            self._gamma = np.random.gamma(1, 1. / 10, [self._K, self._T, 2])
+            #self._gamma = np.random.gamma(10,1./10,[self._K, self._T, 2])
         # the return of function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = beta_expectation(self._gamma)
 
@@ -140,8 +145,6 @@ class SVI_fixed_K_single_level:
 
             # contribution for phase unambiguous terms is same for both hap indicators
             phi_n_base = lp + np.sum(lts[:, (xn == 0), 1], axis=1) + np.sum(lts[:, (xn == 2), 0], axis=1)
-
-            #### PHASE AMBIGUOUS DATA LEFT OUT ####
 
             phi_1[n] = np.exp(phi_n_base) + 1e-100
             phi_1[n] = phi_1[n] / sum(phi_1[n])
@@ -211,6 +214,10 @@ class SVI_fixed_K_single_level:
             # this approach takes an exact sample of the phase indicators, if ever this code gets used for really large T
             # then maybe this should be switched to a gibbs sampler or something
 
+            # todo: the problem is that the expected value of c is approx 0.5 pretty often, which leads to dilution of
+            # the haplotypes, triggering a feedback that assigns everybody to a single overwhelmingly popular haplotype with
+            # neutral probabilities
+
             pa = (xn == 1)  # shorthand for index of sites with ambiguous phases
 
             if (sum(pa)==0):
@@ -249,7 +256,7 @@ class SVI_fixed_K_single_level:
             gamma_sstats[:, (xn == 2), 1] += (phi_1_n + phi_2_n)[:, np.newaxis]
             gamma_sstats[:, (xn == 1), 1] += (np.outer(phi_1_n, c) + np.outer(phi_2_n, (1 - c)))
 
-            # #direct VI approach. Unfortunately seems too sensitive to initial setting of xi_n
+            # #faster VI approach. Unfortunately seems too sensitive to initial setting of xi_n
             # xi_n = np.random.beta(1, 1, sum(pa))  # set each relevant xi randomly
             # # need to iterate to appx convergence between phase indicators c and probabilities phi
             #
@@ -288,15 +295,15 @@ class SVI_fixed_K_single_level:
 
         return lambda_sstats, gamma_sstats
 
-    def update_global(self, observed_snps):
+    def update_global(self, observed_snps,include_phased=True):
         """
         Takes in a minibatch of data, does a local update and then
         uses the result of that update to update the variational
         parameters for the global variables (q(pi|lambda) & q(theta|gamma))
 
-       observed_snps:  numpy array of n people at t contiguous sites.
+        observed_snps:  numpy array of n people at t contiguous sites.
         Each observation is represented as a list of minor allele counts
-
+        include_phased: bool indicating whether likelihood contribution from sites with ambiguous phase should be included
         """
 
         # rhos will be between 0 and 1, and says how much to weight
@@ -309,13 +316,23 @@ class SVI_fixed_K_single_level:
 
         # (lambda_sstats, gamma_sstats) = self.update_local(observed_snps)
 
+
+        #idea: run an initial fit using phase data, but then rejigger the starting haplotypes to
+        # reflect options for all the phase ambiguous sites (which might increase the candidate pool by a factor of
+        # 32ish).
+
         # to avoid phase ambig terms swamping out probability updates, do the first n iterations
         # using no phase ambig data - this should give a reasonable jumping off point for theta values
-        if (self._updatect <= 50):
-            (lambda_sstats, gamma_sstats) = self.update_local_no_phase_ambig(observed_snps)
-        else:
-            (lambda_sstats, gamma_sstats) = self.update_local(observed_snps)
+        # if (self._updatect <= 50):
+        #     (lambda_sstats, gamma_sstats) = self.update_local_no_phase_ambig(observed_snps)
+        # else:
+        #     (lambda_sstats, gamma_sstats) = self.update_local(observed_snps)
 
+        if (include_phased):
+            (lambda_sstats, gamma_sstats) = self.update_local(observed_snps)
+        else:
+            #update ignoring phased data
+            (lambda_sstats, gamma_sstats) = self.update_local_no_phase_ambig(observed_snps)
 
 
         # Update lambda
@@ -341,14 +358,14 @@ class SVI_fixed_K_single_level:
 
 
 def main():
-    #  np.random.seed(1)  # reproducibility
+#    np.random.seed(1)  # reproducibility
 
     K = 100
     T = 10
     N = 1000
     alpha = 0.1
     beta = 0.1
-    eta = 0.1  # not sure about a good starter for this
+    eta = 1  # not sure about a good starter for this
     # copied from OnlineLDAVB example
     tau0 = 1
     kappa = 0.75
@@ -363,19 +380,64 @@ def main():
     #     model.update_global(data[i:(i+19),:])
     #     print sorted(model._lambda,reverse=True)
 
-    # batch VI by passing in same data set each time
+    ###batch VI
+    # set kappa=0 (so rhos=1 always) and pass in same data set each time
     model = SVI_fixed_K_single_level(K=K, T=T, N=N, alpha=alpha, beta=beta, eta=eta, tau0=tau0, kappa=0)
 
-    # batch
-    for i in range(0, 1000):
-        if (np.mod(i, 5) == 0):
-            print i
-            print sorted(model._lambda, reverse=True)
-            print(sum(model._lambda))
+    # get a reasonable starting position in the landscape by first estimating proportions and haplotypes ignoring the
+    # data with ambiguous phases... this converges very quickly
+    for i in range(0, 100):
         model.update_global(data)
 
-    np.save("SVI_output_batch", model._lambda)
+    #this model now has a pretty good idea about sites that can be estimated from phase unambig data
 
+    #order both gamma values and lambda values by the lambda weights
+    slam=np.asarray(sorted(model._lambda,reverse=True))
+    sgam=np.asarray([x for (y,x) in sorted(zip(model._lambda,model._gamma), reverse=True, key=lambda pair: pair[0])])
+
+    #only the haplotypes with non-trivial probability should be kept
+    slam=slam[(slam>1.5*eta)]
+    sgam=sgam[0:len(slam)]
+
+    lambda_start=np.empty([0])
+    gamma_start=np.empty([0,0,0])
+
+    for i in range(0,len(sgam)):
+        #index of terms where alpha/beta is "close" to 1
+        ambig_index=(abs(np.log(sgam[i,:,0] / sgam[i,:,1]))<1)
+        new_gam = np.transpose(np.transpose(sgam[0,:,:]) / np.sum(sgam[0,:,:],axis=1))
+
+        #todo: from here
+        newvals = cartesian()
+
+        temp=new_gam
+        for j in len(newvals):
+            temp[ambig_index,:] = newvals[j]
+            np.append(gamma_start,temp[ambig_index,:])
+
+
+
+
+
+    #(sgam[k,t,a],sgam[k,t,b]) are the (alpha,beta) parameters of the posterior beta distribution of theta_kt
+    # if alpha/beta is far from 1 then we have strong evidence for either 1 or a 0 at this site
+    # if alpha/beta is approximately 1 then there are likely multiple haplotypes that differ at this site but are
+    # otherwise consistent.
+    # idea: make a starting position using this information "weakly"
+
+    # batch
+    for i in range(0, 100):
+        if (np.mod(i, 10) == 0):
+            print i
+            print sorted(model._lambda, reverse=True)
+        model.update_global(data)
+
+    np.save("SVI_output_batch_nophase_lambda_1", model._lambda)
+    np.save("SVI_output_batch_nophase_gamma_1", model._gamma)
+
+    model.update_global(data)
+    np.save("SVI_output_batch_nophase_lambda_2", model._lambda)
+    np.save("SVI_output_batch_nophase_gamma_2", model._gamma)
 
 if __name__ == '__main__':
     main()

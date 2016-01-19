@@ -21,13 +21,17 @@
 
 import numpy as np
 from scipy.special import psi  # digamma
-from scipy.special import expit  # inverse logit
-from functools import partial
-from sklearn.utils.extmath import cartesian
+from scipy.special import expit as sp_expit  # inverse logit
 
 #np.random.seed(100000001)
 mean_change_thresh = 0.001
 
+#changes default expit to prevent overflow errors
+def expit(lp):
+    tmp = np.array(lp) # just to make sure I'm not inadvertently messing up the lp value
+    tmp[(lp>100)]=100
+    tmp[(lp<-100)]=-100
+    return sp_expit(tmp)
 
 def dirichlet_expectation(alpha):
     """
@@ -61,6 +65,7 @@ class SVI_fixed_K_single_level:
         """
         Arguments:
         K: Number of haplotypes
+        T: length of SNP sequence
         N: Total number of people in the population.
         alpha: Hyperparameter for prior on haplotypes theta
         beta: Hyperparameter for prior on haplotypes theta
@@ -101,7 +106,7 @@ class SVI_fixed_K_single_level:
         else:
             # todo: not totally sure this is a sensible initialization
             # (2000,1./100) gives all probabilities within 1 order of magnitude of each other
-            self._lambda = np.random.gamma(2000, 1. / 100, self._K)
+            self._lambda = np.random.gamma(100, 1. / 100, self._K)
         self._E_log_pi = dirichlet_expectation(self._lambda)
         self._exp_E_log_pi = np.exp(self._E_log_pi)
 
@@ -111,7 +116,7 @@ class SVI_fixed_K_single_level:
             self._gamma = gamma_init
         else:
             # TODO: figure out good starting value for this (and why 1,1 causes immediate crash)
-            self._gamma = np.random.gamma(1, 1. / 10, [self._K, self._T, 2])
+            self._gamma = np.random.gamma(10, 1. / 100, [self._K, self._T, 2])
             #self._gamma = np.random.gamma(10,1./10,[self._K, self._T, 2])
         # the return of function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = beta_expectation(self._gamma)
@@ -219,22 +224,24 @@ class SVI_fixed_K_single_level:
             # neutral probabilities
 
             pa = (xn == 1)  # shorthand for index of sites with ambiguous phases
+            c = np.repeat(0.5,sum(pa)) #doesn't really work
 
-            if (sum(pa)==0):
-                c=np.array([])
-            else:
-                # collection of all possible phase indicators
-                cs = np.zeros([sum(pa), 2])
-                cs[:, 1] += 1
-                cs = cartesian(cs)
-
-                # sample the value of c
-                # todo: I could also compute an exact average using this...
-                phase_probs = map(partial(self.prob_c, phi_n_base=phi_n_base, pa=pa), cs)
-                # todo: vv: this shouldn't be necessary... either I made a mistake or it's because of expit overflow errors
-                phase_probs = phase_probs / sum(phase_probs)
-                #c = cs[np.random.multinomial(1, phase_probs).nonzero()[0][0]]
-                c = np.asarray(phase_probs*np.asmatrix(cs)) #exact expectation
+            # all of this stuff was nonsense, but there's definitely the nexus of a good idea here
+            # if (sum(pa)==0):
+            #     c=np.array([])
+            # else:
+            #     # collection of all possible phase indicators
+            #     cs = np.zeros([sum(pa), 2])
+            #     cs[:, 1] += 1
+            #     cs = cartesian(cs)
+            #
+            #     # sample the value of c
+            #     # todo: I could also compute an exact average using this...
+            #     phase_probs = map(partial(self.prob_c, phi_n_base=phi_n_base, pa=pa), cs)
+            #     # todo: vv: this shouldn't be necessary... either I made a mistake or it's because of expit overflow errors
+            #     phase_probs = phase_probs / sum(phase_probs)
+            #     #c = cs[np.random.multinomial(1, phase_probs).nonzero()[0][0]]
+            #     c = np.asarray(phase_probs*np.asmatrix(cs)) #exact expectation
 
             # update the values of phi
             phi_1_n = np.exp(phi_n_base + np.sum(c * lts[:, pa, 1], axis=1) \
@@ -347,11 +354,13 @@ class SVI_fixed_K_single_level:
         # the return of this function has the structure E_logs_theta[k,t] = (E[log(theta_kt),E(log(1-theta_kt)])
         self._E_logs_theta = beta_expectation(self._gamma)
 
-        # #debugging
+        # debugging
+        slam1=np.asarray(sorted(lambda_sstats,reverse=True))
+        sgam1=np.asarray([x for (y,x) in sorted(zip(lambda_sstats,gamma_sstats), reverse=True, key=lambda pair: pair[0])])
+
         # print np.max(self._E_logs_theta)
         # print np.unravel_index(np.argmax(self._E_logs_theta),self._E_logs_theta.shape)
 
-        slam = sorted(self._lambda, reverse=True)  # for debugging
 
         # Update iteration counter
         self._updatect += 1
@@ -371,7 +380,6 @@ def main():
     kappa = 0.75
 
     data = np.load("simdata.npy")
-
     # #SVI
     # model = SVI_fixed_K_single_level(K,T,N,alpha,beta,eta,tau0,kappa)
     #
@@ -387,9 +395,18 @@ def main():
     # get a reasonable starting position in the landscape by first estimating proportions and haplotypes ignoring the
     # data with ambiguous phases... this converges very quickly
     for i in range(0, 100):
-        model.update_global(data)
+        if (np.mod(i, 10) == 0):
+            print i
+            print sorted(model._lambda, reverse=True)
+        model.update_global(data,include_phased=False)
 
     #this model now has a pretty good idea about sites that can be estimated from phase unambig data
+    #(sgam[k,t,a],sgam[k,t,b]) are the (alpha,beta) parameters of the posterior beta distribution of theta_kt
+    # if alpha/beta is far from 1 then we have strong evidence for either 1 or a 0 at this site
+    # if alpha/beta is approximately 1 then there are likely multiple haplotypes that differ at this site but are
+    # otherwise consistent.
+    # idea: make a starting position using this information by preserving strong ratios and "forking" weak ones into new
+    # candidate haplotypes.
 
     #order both gamma values and lambda values by the lambda weights
     slam=np.asarray(sorted(model._lambda,reverse=True))
@@ -400,44 +417,83 @@ def main():
     sgam=sgam[0:len(slam)]
 
     lambda_start=np.empty([0])
-    gamma_start=np.empty([0,0,0])
+    gamma_start=np.empty([0,T,2])
 
+    #iterate through gammas with non-trivial probability
     for i in range(0,len(sgam)):
         #index of terms where alpha/beta is "close" to 1
-        ambig_index=(abs(np.log(sgam[i,:,0] / sgam[i,:,1]))<1)
-        new_gam = np.transpose(np.transpose(sgam[0,:,:]) / np.sum(sgam[0,:,:],axis=1))
+        ambig_index=(abs(np.log(sgam[i,:,0] / sgam[i,:,1])/np.log(10))<1)
+        #emphasize discovered ratio
+        new_gam = 10*pow(np.transpose(np.transpose(sgam[i,:,:]) / np.sum(sgam[i,:,:],axis=1)),2)
 
-        #todo: from here
-        newvals = cartesian()
+        if (sum(ambig_index)==0):
+            gamma_start = np.append(gamma_start,new_gam[np.newaxis,:,:],0)
+            lambda_start = np.append(lambda_start,slam[i])
+        else:
+            #iterate through ambiguous indices
+            for j in range(0,pow(2,sum(ambig_index))):
+                #j in binary
+                b_string=np.unravel_index(j,2*np.ones(sum(ambig_index),dtype=int))
+                #different ratios of alpha/beta
+                new_vals=np.asarray(map(lambda b: [0.1,9.9] if b == 0 else [9.9,0.1], b_string))
+                new_gam[ambig_index]=new_vals
+                gamma_start = np.append(gamma_start,new_gam[np.newaxis,:,:],0)
+                lambda_start = np.append(lambda_start,slam[i]) #same relative probability for all forks from same base gamma
 
-        temp=new_gam
-        for j in len(newvals):
-            temp[ambig_index,:] = newvals[j]
-            np.append(gamma_start,temp[ambig_index,:])
+    #append some "flat" haplotypes with low probability to catch misidentified cases
+    #idea is llhd from terms with good fit should swamp out these
+    #but risk is that these stay flat and end up eating all the probability
+    gamma_start = np.append(gamma_start,np.random.gamma(50, 1. / 100, [10, T, 2]),0)
+    lambda_start = np.append(lambda_start,np.repeat(slam[i],10))
+
+    lambda_start = np.repeat(1,len(lambda_start)) #testing
+#    lambda_start = len(lambda_start)/sum(lambda_start) * lambda_start #avg value = 1
+    gamma_start = gamma_start #multiplying this weights the initial biases higher
 
 
+    np.save("starter_lambda",lambda_start)
+    np.save("starter_gamma",gamma_start)
 
+    lambda_st = np.load("starter_lambda.npy")
+    gamma_st = np.load("starter_gamma.npy")
 
+    K=len(lambda_st)
 
-    #(sgam[k,t,a],sgam[k,t,b]) are the (alpha,beta) parameters of the posterior beta distribution of theta_kt
-    # if alpha/beta is far from 1 then we have strong evidence for either 1 or a 0 at this site
-    # if alpha/beta is approximately 1 then there are likely multiple haplotypes that differ at this site but are
-    # otherwise consistent.
-    # idea: make a starting position using this information "weakly"
+    model = SVI_fixed_K_single_level(K,T,N,alpha,beta,eta,tau0,kappa,lambda_init=lambda_st,gamma_init=gamma_st)
 
-    # batch
-    for i in range(0, 100):
-        if (np.mod(i, 10) == 0):
+    #large K makes this slow... but just a few iterations will throw away almost all of the clusters
+    for i in range(0,10):
+        if (np.mod(i, 0) == 0):
             print i
             print sorted(model._lambda, reverse=True)
         model.update_global(data)
 
-    np.save("SVI_output_batch_nophase_lambda_1", model._lambda)
-    np.save("SVI_output_batch_nophase_gamma_1", model._gamma)
+    #order both gamma values and lambda values by the lambda weights
+    slam=np.asarray(sorted(model._lambda,reverse=True))
+    sgam=np.asarray([x for (y,x) in sorted(zip(model._lambda,model._gamma), reverse=True, key=lambda pair: pair[0])])
 
-    model.update_global(data)
-    np.save("SVI_output_batch_nophase_lambda_2", model._lambda)
-    np.save("SVI_output_batch_nophase_gamma_2", model._gamma)
+    #only the haplotypes with non-trivial probability should be kept
+    slam=slam[(slam>1.1*eta)]
+    sgam=sgam[0:len(slam)]
+
+    reduced_lambda = slam
+    reduced_gamma = sgam
+
+    np.save("reduced_lambda",reduced_lambda)
+    np.save("reduced_gamma",reduced_gamma)
+
+    K=len(reduced_lambda)
+    model = SVI_fixed_K_single_level(K,T,N,alpha,beta,eta,tau0,kappa,lambda_init=reduced_lambda,gamma_init=reduced_gamma)
+
+    # batch
+    for i in range(0, 1001):
+        if (np.mod(i, 5) == 0):
+            print i
+            print sorted(model._lambda, reverse=True)
+        if (np.mod(i,100)==0):
+            np.save("lambda"+str(i), model._lambda)
+            np.save("gamma"+str(i), model._gamma)
+        model.update_global(data)
 
 if __name__ == '__main__':
     main()

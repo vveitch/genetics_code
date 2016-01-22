@@ -25,7 +25,6 @@ from scipy.special import expit as sp_expit  # inverse logit
 from functools import partial
 from sklearn.utils.extmath import cartesian
 
-#np.random.seed(100000001)
 mean_change_thresh = 0.001
 
 #changes default expit to prevent overflow errors
@@ -57,7 +56,6 @@ class SVI_fixed_K_single_level:
     def __init__(self, T, N, eta, tau0, kappa, lambda_init=np.asarray([])):
         """
         Arguments:
-        K: Number of haplotypes
         T: Length of SNP sequence
         N: Total number of people in the population.
         eta: Hyperparameter for prior on haplotype weights pi
@@ -87,38 +85,15 @@ class SVI_fixed_K_single_level:
             self._lambda = lambda_init
         else:
             # todo: not totally sure this is a sensible initialization
-            # (2000,1./100) gives all probabilities within 1 order of magnitude of each other
-            self._lambda = np.random.gamma(100, 1. / 100, self._K)
+            self._lambda = np.random.gamma(10, 1. / 10, self._K)
         self._E_log_pi = dirichlet_expectation(self._lambda)
         self._exp_E_log_pi = np.exp(self._E_log_pi)
 
         #all theta values
-        theta = cartesian(np.repeat(np.array([[0.0001,0.9999]]),T,0))
+        theta = cartesian(np.repeat(np.array([[0.01,0.99]]),T,0))
         self.logs_theta = np.zeros([self._K, self._T, 2])
         self.logs_theta[:,:,0] = np.log(theta)
         self.logs_theta[:,:,1] = np.log(1-theta)
-
-    def prob_c(self, c, phi_n_base, pa):
-        """
-        helper function to compute probabilities of phase indicators
-        :argument:
-        c: the bit string
-        phi_n_base: the phi component that doesn't depend on phase ambiguous terms
-        pa: bool array indicating the phase ambiguous terms
-        :return:
-        the probability of the bit string c
-        """
-        lts = self.logs_theta
-        phi_1 = np.exp(phi_n_base + np.sum(c * lts[:, pa, 1], axis=1) \
-                       + np.sum((1 - c) * lts[:, pa, 0], axis=1)) + 1e-100
-        phi_1 = phi_1 / sum(phi_1)
-
-        phi_2 = np.exp(phi_n_base + np.sum((1 - c) * lts[:, pa, 1], axis=1) \
-                       + np.sum(c * lts[:, pa, 0], axis=1)) + 1e-100
-        phi_2 = phi_2 / sum(phi_2)
-
-        # probability of the string is product of the probabilities at each site
-        return np.prod(expit((phi_2 - phi_1) * np.asmatrix((lts[:, pa, 0]) - (lts[:, pa, 1]))))
 
     def update_local(self, obs_snps):
         # return the sufficient stats needed to compute the global update
@@ -131,8 +106,7 @@ class SVI_fixed_K_single_level:
         lp = self._E_log_pi
         lts = self.logs_theta
 
-        # Now, for each person n update that person's phi and xi
-        # meanchange = 0
+        # Now, for each person n update that person's phi
         for n in range(0, batchN):
             # data for nth person
             # vv: the asarray here should be redundant, but pycharm was giving me grief for omitting it
@@ -142,34 +116,23 @@ class SVI_fixed_K_single_level:
             # todo: rewrite tex equation to look more obviously like how I coded this
             # todo: did I really do this right? the idea is to compute the appropriate equation for all k at once in a vectorized style
 
-            # contribution for phase unambiguous terms is same for both hap indicators
+            # contribution for phase unambiguous terms
             phi_n_base = lp + np.sum(lts[:, (xn == 0), 1], axis=1) + np.sum(lts[:, (xn == 2), 0], axis=1)
 
+            #contribution for phase ambiguous terms
+            #readability
             pa = (xn == 1)  # shorthand for index of sites with ambiguous phases
             c = np.repeat(0.5,sum(pa))
-            # if (sum(pa)==0):
-            #     c=np.array([])
-            # else:
-            #     # collection of all possible phase indicators
-            #     cs = np.zeros([sum(pa), 2])
-            #     cs[:, 1] = 1
-            #     cs = cartesian(cs)
-            #
-            #     #exact expectation of c
-            #     phase_probs = map(partial(self.prob_c, phi_n_base=phi_n_base, pa=pa), cs)
-            #     # todo: vv: this shouldn't be necessary... either I made a mistake or it's because of expit overflow errors
-            #     phase_probs = phase_probs / sum(phase_probs)
-            #     #c = cs[np.random.multinomial(1, phase_probs).nonzero()[0][0]] #random sample
-            #     c = np.asarray(phase_probs*np.asmatrix(cs)) #exact expectation
-
-            # update the values of phi
             phi_1_n = np.exp(phi_n_base + np.sum(c * lts[:, pa, 1], axis=1) \
                              + np.sum((1 - c) * lts[:, pa, 0], axis=1)) + 1e-100
             phi_1_n = phi_1_n / sum(phi_1_n)
 
-            phi_2_n = np.exp(phi_n_base + np.sum((1 - c) * lts[:, pa, 1], axis=1) \
-                             + np.sum(c * lts[:, pa, 0], axis=1)) + 1e-100
-            phi_2_n = phi_2_n / sum(phi_2_n)
+            phi_2_n = phi_1_n
+
+            # with phases c=1/2 this is the same as phi_1_n
+            # phi_2_n = np.exp(phi_n_base + np.sum((1 - c) * lts[:, pa, 1], axis=1) \
+            #                  + np.sum(c * lts[:, pa, 0], axis=1)) + 1e-100
+            # phi_2_n = phi_2_n / sum(phi_2_n)
 
             lambda_sstats += (phi_1_n + phi_2_n)
 
@@ -201,14 +164,6 @@ class SVI_fixed_K_single_level:
                        rhos * (self._eta + self._N / len(observed_snps) * lambda_sstats)
         self._E_log_pi = dirichlet_expectation(self._lambda)
         self._exp_E_log_pi = np.exp(self._E_log_pi)
-
-        # debugging
-        # slam1=np.asarray(sorted(lambda_sstats,reverse=True))
-        # sgam1=np.asarray([x for (y,x) in sorted(zip(lambda_sstats,gamma_sstats), reverse=True, key=lambda pair: pair[0])])
-
-        # print np.max(self._E_logs_theta)
-        # print np.unravel_index(np.argmax(self._E_logs_theta),self._E_logs_theta.shape)
-
 
         # Update iteration counter
         self._updatect += 1

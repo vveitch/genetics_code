@@ -96,7 +96,7 @@ def draw_people(num_people, weights, haplotypes):
     # arguments:
     # weights: truncated list of DP weights
     # haplotypes: list of haplotypes (same length as list of weights)
-    return [draw_person(weights, haplotypes) for _ in range(num_people)]
+    return np.asarray([draw_person(weights, haplotypes) for _ in range(num_people)])
 
 
 def main():
@@ -108,7 +108,6 @@ def main():
     # which matches my intuition for how these oughta look
     haplotypes = draw_haplotypes(weights.size, 0.01, 0.01, 10)
     people = draw_people(1000, weights, haplotypes)
-    people = np.asarray(people)
 
     np.save("simhaps",haplotypes)
     np.save("simweights",weights)
